@@ -1,0 +1,6 @@
+data/*
+!data/sample/
+__pycache__/
+.venv/
+report/
+*.pyc
