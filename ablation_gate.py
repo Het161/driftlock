@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drift-Sense Phase-1 ablation gate (SPEC_AMENDMENT_v1.2 §C).
+"""Drift-Sense Phase-1 ablation gate (SPEC_AMENDMENT_v1.3 §C).
 
 Answers one question: **is the generated world actually localizable?**  A dataset
 on which no algorithm can succeed would silently invalidate every downstream
@@ -14,19 +14,25 @@ global peak.  No scale sweep, no rotation sweep, no sub-pixel fit, and crucially
 **no closest-to-centre tie-break** -- the gate must prove the image content
 alone resolves the location, not the drift prior.
 
-Three-tier world ablation (v1.2 §A.1):
+Three-tier world ablation (v1.3 §A):
 
-    --pure-lattice     no superstructure          -> must LOSE (degenerate control)
-    --mat-jitter 0     regular mats (v1.1)        -> intermediate (mat-level ambiguity)
-    default            aperiodic mats (v1.2)      -> must WIN
+    --pure-lattice        no superstructure                -> must LOSE (degenerate control)
+    --commensurate-mats   stripe pitch = integer x lattice -> intermediate (v1.1's real defect)
+    default               aperiodic, incommensurate        -> must WIN
+
+The middle tier targets *commensurability*, not spacing regularity: an isolation
+ablation showed that when the stripe pitch is an exact multiple of the lattice
+pitch, a one-stripe shift is also a whole number of lattice periods and the
+combined pattern is genuinely shift-invariant.  Spacing jitter was never the
+load-bearing change.
 
 ``rank`` = number of correlation-map positions scoring strictly higher than the
 best score within +/-2 px of the ground truth.  ``rank 0`` means the true site
 IS the global peak.
 
-If a v1.2 row misses its bound the script prints the peak-offset diagnostic --
+If a v1.3 row misses its bound the script prints the peak-offset diagnostic --
 false-peak displacements expressed in stripe-pitch and lattice-pitch units,
-which identifies *which* periodicity is still winning.  Per v1.2 §C the correct
+which identifies *which* periodicity is still winning.  Per v1.3 §C the correct
 response to a miss is to read that table, not to tune constants until it passes.
 
 Example
@@ -81,6 +87,7 @@ def build_pair(
     capture: bool,
     pure_lattice: bool,
     mat_jitter: float = G.MAT_JITTER,
+    commensurate: bool = False,
     noise_level: str = "medium",
     seed: int = 42,
 ) -> Pair:
@@ -107,6 +114,7 @@ def build_pair(
     world, params, profiles = G.build_world(
         "dram", rng_struct, rng_super, rng_def,
         pure_lattice=pure_lattice, defects=True, mat_jitter=mat_jitter,
+        commensurate=commensurate,
     )
     x0, y0 = cx - G.CAPTURE_SIZE // 2, cy - G.CAPTURE_SIZE // 2
     reference = world[y0:y0 + G.CAPTURE_SIZE, x0:x0 + G.CAPTURE_SIZE].copy()
@@ -163,7 +171,7 @@ def score_at_truth(corr: np.ndarray, true_x: float, true_y: float) -> tuple[floa
 
 
 # --------------------------------------------------------------------------- #
-# Conditions and gate bounds (SPEC_AMENDMENT_v1.2 §C)
+# Conditions and gate bounds (SPEC_AMENDMENT_v1.3 §C)
 # --------------------------------------------------------------------------- #
 
 
@@ -182,26 +190,26 @@ class Condition:
 def _conditions(n: int) -> list[Condition]:
     return [
         Condition(
-            "v1.2 world, clean, no warp",
+            "v1.3 world, clean, no warp",
             dict(warp=False, capture=False, pure_lattice=False),
             "rank0 >= 7/8, err med < 3px",
             lambda errs, ranks, n0: n0 >= int(np.ceil(7 * n / 8)) and float(np.median(errs)) < 3.0,
         ),
         Condition(
-            "v1.2 world, capture noise (medium)",
+            "v1.3 world, capture noise (medium)",
             dict(warp=False, capture=True, pure_lattice=False),
             "rank0 >= 6/8, err med < 5px",
             lambda errs, ranks, n0: n0 >= int(np.ceil(6 * n / 8)) and float(np.median(errs)) < 5.0,
         ),
         Condition(
-            "v1.2 world, capture noise + warp",
+            "v1.3 world, capture noise + warp",
             dict(warp=True, capture=True, pure_lattice=False),
             "err med < 10px",
             lambda errs, ranks, n0: float(np.median(errs)) < 10.0,
         ),
         Condition(
-            "--mat-jitter 0 (v1.1 regular), noise",
-            dict(warp=False, capture=True, pure_lattice=False, mat_jitter=0.0),
+            "--commensurate-mats, capture noise",
+            dict(warp=False, capture=True, pure_lattice=False, commensurate=True),
             "rank med in [2, 60]",
             lambda errs, ranks, n0: 2.0 <= float(np.median(ranks)) <= 60.0,
             is_control=True,
@@ -226,7 +234,7 @@ def peak_offset_table(pair: Pair, corr: np.ndarray) -> None:
 
     If the offsets are integer multiples of a pitch, that periodicity is what
     the matcher is locking onto -- which names the defect precisely instead of
-    inviting blind constant tuning (v1.2 §C).
+    inviting blind constant tuning (v1.3 §C).
     """
     p = pair.params
     sa = p.get("sa_base_px", float("nan")) / G.DOWNSAMPLE
@@ -258,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ablation_gate.py",
         description="Phase-1 ablation gate: prove the generated world is localizable "
-                    "with a plain single-scale NCC baseline (SPEC_AMENDMENT_v1.2 §C).",
+                    "with a plain single-scale NCC baseline (SPEC_AMENDMENT_v1.3 §C).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--n-pairs", type=int, default=8,
@@ -268,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="sensor-noise preset for the noisy rows")
     parser.add_argument("--diagnose", type=int, nargs="*", metavar="PAIR",
                         help="print the peak-offset table for these pair indices "
-                             "(v1.2 default world) and exit")
+                             "(v1.3 default world) and exit")
     return parser
 
 
@@ -288,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     n = args.n_pairs
-    print("Drift-Sense Phase-1 ablation gate  (SPEC_AMENDMENT_v1.2 §C)")
+    print("Drift-Sense Phase-1 ablation gate  (SPEC_AMENDMENT_v1.3 §C)")
     print(f"  baseline: plain single-scale NCC, no Phase-3 upgrades, no centre tie-break")
     print(f"  n={n} pairs/condition  seed={args.seed}  noise={args.noise_level}")
     print()
@@ -328,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
               + "; ".join(c.label for c in failures))
 
     if v12_failures:
-        print("\nPeak-offset diagnostic (v1.2 §C: read this, do not tune constants).")
+        print("\nPeak-offset diagnostic (v1.3 §C: read this, do not tune constants).")
         print("Integer ratios identify which periodicity the matcher is locking onto.")
         for index in (1, 2):
             pair = build_pair(index, warp=False, capture=True, pure_lattice=False,

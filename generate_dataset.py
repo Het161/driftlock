@@ -39,11 +39,20 @@ reference crop straddles at least one stripe of each family.  The stripe
 *spacing sequence* is then a unique code, so a template containing a stripe can
 only align one way.
 
+An isolation ablation later showed the load-bearing change was not the spacing
+jitter but the move to pitch bases *incommensurate* with the lattice: under v1.1
+the stripe pitch was an integer multiple of the lattice pitch, so a one-stripe
+shift was also a whole number of lattice periods and the combined pattern was
+genuinely shift-invariant.  With incommensurate pitches the joint period becomes
+the LCM of the two, which exceeds the frame.  That is the recorded causal story
+(CITE: [S12]).
+
 Two controls are kept permanently: ``--pure-lattice`` (no superstructure at all,
-the degenerate world and our honest-failure exhibit) and ``--mat-jitter 0``
-(superstructure but strictly periodic, the v1.1 model).  LINE_INTENSITY_JITTER
-stays at the spec value of 0.05 throughout -- the amendments explicitly forbid
-papering over a modelling gap by inflating a fake signature.
+the degenerate world and our honest-failure exhibit) and ``--commensurate-mats``
+(superstructure quantized back onto lattice multiples, reproducing v1.1's actual
+defect).  LINE_INTENSITY_JITTER stays at the spec value of 0.05 throughout -- the
+amendments explicitly forbid papering over a modelling gap by inflating a fake
+signature.
 
 Where the ground truth comes from (v1.1 §B): the true position is sampled
 *first* in search coordinates as a drift offset from the frame centre (the tool
@@ -94,7 +103,7 @@ from common import (
 # (PROJECT_SPEC.md §9: "keep constants named and documented at the top").
 # --------------------------------------------------------------------------- #
 
-GENERATOR_VERSION = "phase1.2"
+GENERATOR_VERSION = "phase1.3"
 
 # --- geometry (PROJECT_SPEC.md §3.1) ---
 WORLD_SIZE = 10_000          # clean "physical truth" canvas, 100x-equivalent px
@@ -158,19 +167,28 @@ MAT_JITTER_UP_FACTOR = 1.2   # asymmetric: step ~ base * U(1 - j, 1 + 1.2*j)
 SA_BASE_RANGE = (550.0, 720.0)       # world px between sense-amp stripes
 DR_BASE_RANGE = (480.0, 680.0)       # world px between driver stripes
 
-SA_WIDTH_F_RANGE = (2.0, 4.0)        # per-stripe width, in units of F
+# Stripe widths are ABSOLUTE world px (v1.3 §B), no longer F-multiples.  Tying
+# width to F made high-F fields peripheral-dominated -- stripes wider than the
+# mats they separate, ~60% coverage, an array reduced to slivers.  A real DRAM
+# field is array-dominated with thin circuitry bands between mats, and a
+# fab-engineer judge would notice the difference immediately.
+SA_WIDTH_RANGE_PX = (50.0, 110.0)    # per-stripe sense-amp band width
+DR_WIDTH_RANGE_PX = (60.0, 140.0)    # per-stripe driver band width
 SA_INTENSITY, SA_INTENSITY_JITTER = 0.45, 0.03
-SA_SUBLINE_COUNT_RANGE = (1, 2)      # faint internal texture so stripes read as
-SA_SUBLINE_WIDTH_F = 0.5             #   circuitry rather than empty voids
-SA_SUBLINE_BOOST = 0.10
-
-DR_WIDTH_F_RANGE = (3.0, 5.0)        # per-stripe width, in units of F
 DR_INTENSITY, DR_INTENSITY_JITTER = 0.35, 0.03
+
+# Internal sub-line texture, so a stripe reads as circuitry rather than a void.
+# Width scales with the (now much thinner) stripe; a narrow band only has room
+# for a single sub-line.
+SA_SUBLINE_COUNT_RANGE = (1, 2)
+SA_SUBLINE_WIDTH_FRAC = 0.18         # of the stripe width
+SA_SUBLINE_SINGLE_BELOW_PX = 80.0    # below this width, exactly one sub-line
+SA_SUBLINE_BOOST = 0.10
 
 # Bank boundary (v1.2 §A.4): one extra-wide, extra-dark stripe per axis.  A bank
 # edge is a far larger break than a mat edge, so it is a strong landmark.
 BANK_PROB = 0.7
-BANK_WIDTH_F_RANGE = (8.0, 12.0)
+BANK_WIDTH_RANGE_PX = (200.0, 350.0)
 BANK_INTENSITY, BANK_INTENSITY_JITTER = 0.30, 0.03
 
 # --- contamination particles (SPEC_AMENDMENT_v1.1 §A.3) ---
@@ -408,8 +426,10 @@ def _stripe_system(
     intensity_jitter: float,
     rng: np.random.Generator,
     *,
+    per_stripe_width: bool = True,
     subline_count_range: tuple[int, int] | None = None,
-    subline_width: float = 0.0,
+    subline_width_frac: float = 0.0,
+    subline_single_below: float = 0.0,
     subline_boost: float = 0.0,
     bank_prob: float = 0.0,
     bank_width_range: tuple[float, float] | None = None,
@@ -424,19 +444,26 @@ def _stripe_system(
     for the same reason as :func:`_line_profile`.
 
     Per v1.2 §A.3 the width and intensity are drawn *per stripe*, so the stripe
-    sequence carries a unique code rather than being a repeating unit.
+    sequence carries a unique code rather than being a repeating unit.  Setting
+    ``per_stripe_width=False`` draws one width for the whole family instead,
+    which is part of what ``--commensurate-mats`` needs to reconstruct the v1.1
+    defect faithfully (v1.3 §A.2).
 
     Args:
         length: Profile length in pixels.
         base_pitch: Nominal stripe-to-stripe spacing in pixels.
         mat_jitter: Spacing irregularity (0 = strictly regular).
-        width_range: ``(lo, hi)`` per-stripe width in pixels.
+        width_range: ``(lo, hi)`` stripe width in pixels.
         intensity: Nominal flat stripe intensity.
         intensity_jitter: Half-width of the uniform per-stripe intensity jitter.
         rng: Superstructure RNG stream.
+        per_stripe_width: Draw the width once per stripe (True) or once per
+            world (False).
         subline_count_range: Inclusive ``(lo, hi)`` internal sub-line count, or
             ``None`` for featureless stripes.
-        subline_width: Sub-line width in pixels.
+        subline_width_frac: Sub-line width as a fraction of the stripe width.
+        subline_single_below: Stripes narrower than this get exactly one
+            sub-line, whatever ``subline_count_range`` says.
         subline_boost: Intensity added along each sub-line.
         bank_prob: Probability of adding one extra-wide bank-boundary stripe.
         bank_width_range: ``(lo, hi)`` bank stripe width in pixels.
@@ -449,13 +476,15 @@ def _stripe_system(
     value = np.zeros(length, dtype=np.float32)
     centers: list[float] = []
 
+    world_width = None if per_stripe_width else float(rng.uniform(*width_range))
     for start in _stripe_starts(length, base_pitch, mat_jitter, rng):
-        width = float(rng.uniform(*width_range))
+        width = float(rng.uniform(*width_range)) if world_width is None else world_width
         inten = intensity + float(rng.uniform(-intensity_jitter, intensity_jitter))
         subline = None
-        if subline_count_range is not None and subline_width > 0.0:
-            count = int(rng.integers(subline_count_range[0], subline_count_range[1] + 1))
-            subline = (count, subline_width, subline_boost)
+        if subline_count_range is not None and subline_width_frac > 0.0:
+            count = (1 if width < subline_single_below
+                     else int(rng.integers(subline_count_range[0], subline_count_range[1] + 1)))
+            subline = (count, width * subline_width_frac, subline_boost)
         if _paint_stripe(alpha, value, start, width, inten, subline):
             centers.append(start + width / 2.0)
 
@@ -486,7 +515,11 @@ def _blend_cols(world: np.ndarray, alpha: np.ndarray, value: np.ndarray) -> None
 
 
 def apply_superstructure(
-    world: np.ndarray, f: float, rng: np.random.Generator, mat_jitter: float = MAT_JITTER
+    world: np.ndarray,
+    f: float,
+    rng: np.random.Generator,
+    mat_jitter: float = MAT_JITTER,
+    commensurate: bool = False,
 ) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Overlay sense-amp and wordline-driver stripes in place (v1.2 §A).
 
@@ -512,27 +545,45 @@ def apply_superstructure(
         feed the defect keep-out test; the alpha profiles let the caller measure
         per-crop stripe coverage.
     """
+    # v1.3 §A: the commensurate ablation mode quantizes each base onto an exact
+    # multiple of the corresponding lattice pitch, forces regular spacing, drops
+    # the bank landmarks and fixes the width per world -- reconstructing v1.1's
+    # real defect, where a one-stripe shift was also a whole number of lattice
+    # periods and the combined pattern was therefore genuinely shift-invariant.
+    if commensurate:
+        mat_jitter = 0.0
+        bank_prob = 0.0
+        per_stripe_width = False
+    else:
+        bank_prob = BANK_PROB
+        per_stripe_width = True
+
     sa_base = float(rng.uniform(*SA_BASE_RANGE))
+    dr_base = float(rng.uniform(*DR_BASE_RANGE))
+    if commensurate:
+        sa_base = max(1.0, round(sa_base / (WL_PITCH_F * f))) * (WL_PITCH_F * f)
+        dr_base = max(1.0, round(dr_base / (BL_PITCH_F * f))) * (BL_PITCH_F * f)
+
     sa_alpha, sa_value, sa_centers, sa_bank = _stripe_system(
-        world.shape[0], sa_base, mat_jitter,
-        (SA_WIDTH_F_RANGE[0] * f, SA_WIDTH_F_RANGE[1] * f),
+        world.shape[0], sa_base, mat_jitter, SA_WIDTH_RANGE_PX,
         SA_INTENSITY, SA_INTENSITY_JITTER, rng,
+        per_stripe_width=per_stripe_width,
         subline_count_range=SA_SUBLINE_COUNT_RANGE,
-        subline_width=SA_SUBLINE_WIDTH_F * f,
+        subline_width_frac=SA_SUBLINE_WIDTH_FRAC,
+        subline_single_below=SA_SUBLINE_SINGLE_BELOW_PX,
         subline_boost=SA_SUBLINE_BOOST,
-        bank_prob=BANK_PROB,
-        bank_width_range=(BANK_WIDTH_F_RANGE[0] * f, BANK_WIDTH_F_RANGE[1] * f),
+        bank_prob=bank_prob,
+        bank_width_range=BANK_WIDTH_RANGE_PX,
         bank_intensity=BANK_INTENSITY,
     )
     _blend_rows(world, sa_alpha, sa_value)
 
-    dr_base = float(rng.uniform(*DR_BASE_RANGE))
     dr_alpha, dr_value, dr_centers, dr_bank = _stripe_system(
-        world.shape[1], dr_base, mat_jitter,
-        (DR_WIDTH_F_RANGE[0] * f, DR_WIDTH_F_RANGE[1] * f),
+        world.shape[1], dr_base, mat_jitter, DR_WIDTH_RANGE_PX,
         DR_INTENSITY, DR_INTENSITY_JITTER, rng,
-        bank_prob=BANK_PROB,
-        bank_width_range=(BANK_WIDTH_F_RANGE[0] * f, BANK_WIDTH_F_RANGE[1] * f),
+        per_stripe_width=per_stripe_width,
+        bank_prob=bank_prob,
+        bank_width_range=BANK_WIDTH_RANGE_PX,
         bank_intensity=BANK_INTENSITY,
     )
     _blend_cols(world, dr_alpha, dr_value)
@@ -550,8 +601,11 @@ def apply_superstructure(
 
     params = {
         "mat_jitter": mat_jitter,
+        "commensurate_mats": bool(commensurate),
         "sa_base_px": round(sa_base, 2),
         "dr_base_px": round(dr_base, 2),
+        "sa_base_over_wl_pitch": round(sa_base / (WL_PITCH_F * f), 4),
+        "dr_base_over_bl_pitch": round(dr_base / (BL_PITCH_F * f), 4),
         "sa_stripes": int(sa_centers.size),
         "dr_stripes": int(dr_centers.size),
         "sa_bank": bool(sa_bank),
@@ -708,14 +762,19 @@ def build_world(
     pure_lattice: bool = False,
     defects: bool = True,
     mat_jitter: float = MAT_JITTER,
+    commensurate: bool = False,
 ) -> tuple[np.ndarray, dict[str, Any], dict[str, np.ndarray]]:
     """Build the full clean world: lattice, then superstructure, then particles.
 
-    ``pure_lattice=True`` skips both superstructure and particles, reproducing
-    the degenerate v1.0 world on demand (v1.1 §A.5).  ``mat_jitter=0`` keeps the
-    superstructure but makes it strictly periodic, reproducing the v1.1 model.
-    Together those give the three-tier ablation of v1.2 §A.1:
-    pure lattice -> regular mats -> aperiodic mats.
+    Three-tier ablation (v1.3 §A):
+      ``pure_lattice=True``  -- no superstructure at all, the degenerate v1.0 world
+      ``commensurate=True``  -- superstructure pitched on exact lattice multiples,
+                                reproducing v1.1's real defect
+      default                -- aperiodic, incommensurate superstructure (v1.2/v1.3)
+
+    ``mat_jitter`` remains available as an independent knob, but it is no longer
+    the ablation's middle tier: the isolation ablation showed spacing jitter was
+    not the load-bearing change -- commensurability was.
 
     Because superstructure and defects own separate RNG streams, toggling either
     flag leaves the lattice and the stage geometry bit-for-bit identical --
@@ -741,7 +800,7 @@ def build_world(
         return world, params, {}
 
     super_params, sa_centers, dr_centers, sa_alpha, dr_alpha = apply_superstructure(
-        world, params["F"], rng_super, mat_jitter
+        world, params["F"], rng_super, mat_jitter, commensurate
     )
     params.update(super_params)
 
@@ -920,6 +979,7 @@ def generate_pair(
     drift_sigma: float = DRIFT_SIGMA,
     drift_cap: float = DRIFT_CAP,
     mat_jitter: float = MAT_JITTER,
+    commensurate: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Generate one reference/search pair plus its ground-truth record.
 
@@ -933,6 +993,8 @@ def generate_pair(
         drift_sigma: Sigma of the drift magnitude, in search px.
         drift_cap: Hard cap on the drift magnitude, in search px.
         mat_jitter: Mat-spacing irregularity; 0 = strictly regular (v1.2 §A.1).
+        commensurate: Quantize stripe pitches onto lattice multiples, the v1.1
+            defect reproduced for ablation (v1.3 §A). Not a realistic mode.
 
     Returns:
         ``(reference, search, record)``; both images are float32 in
@@ -958,6 +1020,7 @@ def generate_pair(
     world, structure_params, profiles = build_world(
         style, rng_structure, rng_super, rng_defects,
         pure_lattice=pure_lattice, defects=defects, mat_jitter=mat_jitter,
+        commensurate=commensurate,
     )
 
     x0, y0 = cx - CAPTURE_SIZE // 2, cy - CAPTURE_SIZE // 2
@@ -1081,7 +1144,12 @@ def save_preview(
     ref_small = cv2.resize(reference, (CAPTURE_SIZE // DOWNSAMPLE,) * 2, interpolation=cv2.INTER_AREA)
 
     fig, axes = plt.subplots(1, 3, figsize=(16.5, 6.0))
-    world_kind = "PURE LATTICE (degenerate control)" if record["pure_lattice"] else "lattice + superstructure"
+    if record["pure_lattice"]:
+        world_kind = "PURE LATTICE (degenerate control)"
+    elif record.get("commensurate_mats"):
+        world_kind = "COMMENSURATE mats (v1.1 defect control)"
+    else:
+        world_kind = "lattice + aperiodic superstructure"
     fig.suptitle(
         f"{record['id']}  |  {record['style']} / {world_kind}  noise={record['noise_level']}  "
         f"F={record['F']:.1f}px  theta={record['theta_deg']:+.2f}deg  scale={record['scale']:.4f}  "
@@ -1197,9 +1265,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="sensor-noise preset (N_e and readout sigma)")
     parser.add_argument("--preview", action="store_true",
                         help="also write annotated composite previews per pair")
-    parser.add_argument("--pure-lattice", action="store_true",
-                        help="disable superstructure and particles, reproducing the "
-                             "degenerate uniform world (the hard/ambiguous control case)")
+    ablation = parser.add_mutually_exclusive_group()
+    ablation.add_argument("--pure-lattice", action="store_true",
+                          help="disable superstructure and particles, reproducing the "
+                               "degenerate uniform world (the hard/ambiguous control case)")
+    ablation.add_argument("--commensurate-mats", action="store_true",
+                          help="reproduces the v1.1 commensurate-superstructure defect for "
+                               "ablation; not a realistic mode")
     parser.add_argument("--defects", action=argparse.BooleanOptionalAction, default=True,
                         help="sprinkle contamination particles (Poisson, ~2 per world)")
     parser.add_argument("--drift-sigma", type=_positive_float, default=DRIFT_SIGMA,
@@ -1219,7 +1291,7 @@ def _iter_pairs(args: argparse.Namespace) -> Iterator[tuple[int, np.ndarray, np.
             index, args.style, args.noise_level, args.seed,
             pure_lattice=args.pure_lattice, defects=args.defects,
             drift_sigma=args.drift_sigma, drift_cap=args.drift_cap,
-            mat_jitter=args.mat_jitter,
+            mat_jitter=args.mat_jitter, commensurate=args.commensurate_mats,
         )
         yield index, reference, search, record, time.perf_counter() - started
 
@@ -1239,9 +1311,11 @@ def main(argv: list[str] | None = None) -> int:
     preview_dir = ensure_dir(out_dir / "previews") if args.preview else None
 
     if args.pure_lattice:
-        world_kind = "pure lattice (degenerate control)"
+        world_kind = "pure lattice (degenerate control, NOT realistic)"
+    elif args.commensurate_mats:
+        world_kind = "lattice + COMMENSURATE superstructure (v1.1 defect control, NOT realistic)"
     else:
-        mats = "aperiodic mats" if args.mat_jitter > 0 else "REGULAR mats (v1.1 control)"
+        mats = "aperiodic mats" if args.mat_jitter > 0 else "regular mats"
         world_kind = (f"lattice + superstructure, {mats} (jitter={args.mat_jitter:g}), "
                       f"defects={'on' if args.defects else 'off'}")
     print(f"Drift-Sense dataset generator ({GENERATOR_VERSION})")
@@ -1278,12 +1352,13 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "meta": {
             "generator_version": GENERATOR_VERSION,
-            "spec": "PROJECT_SPEC.md §3 + SPEC_AMENDMENT_v1.1 §B + SPEC_AMENDMENT_v1.2 §A",
+            "spec": ("docs/PROJECT_SPEC.md §3 + SPEC_AMENDMENT v1.1 §B + v1.2 §A + v1.3 §A/§B"),
             "style": args.style,
             "noise_level": args.noise_level,
             "seed": args.seed,
             "num_pairs": args.num_pairs,
             "pure_lattice": args.pure_lattice,
+            "commensurate_mats": args.commensurate_mats,
             "defects": args.defects,
             "mat_jitter": args.mat_jitter,
             "drift_sigma": args.drift_sigma,

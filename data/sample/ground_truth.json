@@ -1,12 +1,13 @@
 {
   "meta": {
-    "generator_version": "phase1.2",
-    "spec": "PROJECT_SPEC.md \u00a73 + SPEC_AMENDMENT_v1.1 \u00a7B + SPEC_AMENDMENT_v1.2 \u00a7A",
+    "generator_version": "phase1.3",
+    "spec": "docs/PROJECT_SPEC.md \u00a73 + SPEC_AMENDMENT v1.1 \u00a7B + v1.2 \u00a7A + v1.3 \u00a7A/\u00a7B",
     "style": "dram",
     "noise_level": "medium",
     "seed": 42,
     "num_pairs": 1,
     "pure_lattice": false,
+    "commensurate_mats": false,
     "defects": true,
     "mat_jitter": 0.25,
     "drift_sigma": 120.0,
@@ -38,7 +39,7 @@
       "search_noise"
     ],
     "gt_convention": "true_x/true_y = A(cx, cy) / 10  (PROJECT_SPEC.md 3.1.6)",
-    "note": "One committed sample pair so the repo demonstrates the data format before generation is run (PROJECT_SPEC.md 8). Reproduce with: python generate_dataset.py --num-pairs 5 --preview --seed 42"
+    "note": "One committed sample pair so the repo demonstrates the data format before generation is run (docs/PROJECT_SPEC.md 8). Reproduce with: python generate_dataset.py --num-pairs 5 --preview --seed 42"
   },
   "pairs": [
     {
@@ -68,9 +69,9 @@
       "b_search": 0.03,
       "expected_template_px": 97.14,
       "n_defects_in_ref": 0,
-      "sa_coverage_ref_pct": 13.74,
-      "dr_coverage_ref_pct": 40.61,
-      "superstructure_coverage_ref_pct": 48.77,
+      "sa_coverage_ref_pct": 7.21,
+      "dr_coverage_ref_pct": 13.46,
+      "superstructure_coverage_ref_pct": 19.7,
       "seeds": {
         "structure": 3329053876,
         "geometry": 3645748255,
@@ -90,14 +91,17 @@
       "pure_lattice": false,
       "defects_enabled": true,
       "mat_jitter": 0.25,
+      "commensurate_mats": false,
       "sa_base_px": 671.3,
-      "dr_base_px": 616.84,
-      "sa_stripes": 15,
+      "dr_base_px": 636.41,
+      "sa_base_over_wl_pitch": 4.4573,
+      "dr_base_over_bl_pitch": 6.3385,
+      "sa_stripes": 16,
       "dr_stripes": 18,
       "sa_bank": true,
       "dr_bank": true,
-      "sa_max_clear_gap_px": 692,
-      "dr_max_clear_gap_px": 513,
+      "sa_max_clear_gap_px": 777,
+      "dr_max_clear_gap_px": 614,
       "n_defects": 1
     }
   ]
