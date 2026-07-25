@@ -79,6 +79,20 @@ this superstructure, **not** raising `LINE_INTENSITY_JITTER` (values ≥0.15 are
 organization papers)
 *(TODO Het: exact titles/DOIs)*
 
+**[S12] Real DRAM floorplans are not exactly periodic at field scale: redundancy / spare rows and columns, edge mats, and bank boundaries break mat periodicity.**
+A floorplan that repeated exactly would make every mat cell interchangeable. Real arrays
+carry spare rows/columns for repair, irregular edge mats, and bank boundaries, so the
+sequence of mat spacings is effectively a unique code across the die.
+→ used in: `_stripe_starts()` irregular spacing (`MAT_JITTER`, `--mat-jitter`), per-stripe
+width/intensity draws, and the bank-boundary stripe (`BANK_PROB`, `BANK_WIDTH_F_RANGE`,
+`BANK_INTENSITY`) — SPEC_AMENDMENT_v1.2 §A
+→ measured: with v1.1's strictly regular mats *pitched as an integer multiple of the lattice*,
+false peaks landed on exact integer multiples of the stripe pitch (rank median 30). Moving to
+absolute pitch bases incommensurate with the lattice pitch is what removes the joint
+periodicity; the spacing jitter hardens it further.
+→ refs: DRAM redundancy / repair literature; memory floorplanning texts
+*(TODO Het: exact titles/DOIs)*
+
 **[S10] Contamination particles are a standard artifact in SEM-based wafer inspection.**
 → used in: `add_defects()` (SPEC_AMENDMENT_v1.1 §A.3); constants `DEFECT_RATE`,
 `DEFECT_SIGMA_RANGE`, `DEFECT_AMPLITUDE_RANGE`, `DEFECT_MIN_CROSSING_DIST`
@@ -130,3 +144,4 @@ fractional offset.
 | S9  | Subarray mats / sense-amp + driver stripes | `apply_superstructure` |
 | S10 | SEM contamination particles | `add_defects` |
 | S11 | Navigation drift centres the target | `_place_by_drift` |
+| S12 | Floorplans are aperiodic at field scale | `_stripe_starts`, bank stripe |

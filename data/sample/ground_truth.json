@@ -1,13 +1,14 @@
 {
   "meta": {
-    "generator_version": "phase1.1",
-    "spec": "PROJECT_SPEC.md \u00a73 + SPEC_AMENDMENT_v1.1 \u00a7A/\u00a7B",
+    "generator_version": "phase1.2",
+    "spec": "PROJECT_SPEC.md \u00a73 + SPEC_AMENDMENT_v1.1 \u00a7B + SPEC_AMENDMENT_v1.2 \u00a7A",
     "style": "dram",
     "noise_level": "medium",
     "seed": 42,
     "num_pairs": 1,
     "pure_lattice": false,
     "defects": true,
+    "mat_jitter": 0.25,
     "drift_sigma": 120.0,
     "drift_cap": 350.0,
     "world_size": 10000,
@@ -67,6 +68,9 @@
       "b_search": 0.03,
       "expected_template_px": 97.14,
       "n_defects_in_ref": 0,
+      "sa_coverage_ref_pct": 13.74,
+      "dr_coverage_ref_pct": 40.61,
+      "superstructure_coverage_ref_pct": 48.77,
       "seeds": {
         "structure": 3329053876,
         "geometry": 3645748255,
@@ -85,12 +89,15 @@
       "global_bias": 0.0228,
       "pure_lattice": false,
       "defects_enabled": true,
-      "sa_pitch_px": 2409.7,
-      "sa_width_px": 178.92,
-      "dr_pitch_px": 2008.08,
-      "dr_width_px": 239.34,
-      "sa_stripes_in_ref": 1,
-      "dr_stripes_in_ref": 1,
+      "mat_jitter": 0.25,
+      "sa_base_px": 671.3,
+      "dr_base_px": 616.84,
+      "sa_stripes": 15,
+      "dr_stripes": 18,
+      "sa_bank": true,
+      "dr_bank": true,
+      "sa_max_clear_gap_px": 692,
+      "dr_max_clear_gap_px": 513,
       "n_defects": 1
     }
   ]

@@ -2,8 +2,10 @@
 """Drift-Sense Phase 1 -- synthetic wafer image-pair generator.
 
 Implements PROJECT_SPEC.md §3 as amended by SPEC_AMENDMENT_v1.1 (§A replaces
-§3.1.2, §B replaces §3.1.4).  Produces physically-motivated reference/search
-image pairs for the Applied Materials PS2 navigation-error-recovery task:
+§3.1.2, §B replaces §3.1.4) and SPEC_AMENDMENT_v1.2 (§A replaces v1.1 §A.1-2:
+aperiodic mat spacing with absolute, coverage-guaranteed pitch bases).  Produces
+physically-motivated reference/search image pairs for the Applied Materials PS2
+navigation-error-recovery task:
 
     reference : 1000x1000 crop of the die at 100x-equivalent resolution
     search    : 1000x1000 view of the same die at 10x, i.e. the reference
@@ -15,9 +17,10 @@ Pipeline per pair
 -----------------
     world (10000x10000 clean truth)
       = DRAM/FinFET lattice
-      + sense-amplifier stripes (horizontal)      -- v1.1 §A.1
-      + wordline-driver stripes (vertical)        -- v1.1 §A.2
-      + contamination particles                   -- v1.1 §A.3
+      + sense-amplifier stripes (horizontal, aperiodic)  -- v1.2 §A
+      + wordline-driver stripes (vertical, aperiodic)    -- v1.2 §A
+      + one bank-boundary stripe per axis (p=0.7)        -- v1.2 §A.4
+      + contamination particles                          -- v1.1 §A.3
       |
       |-- crop 1000x1000 at (cx, cy) ---------------------> reference capture
       `-- warpAffine(A) then resize x0.1 (INTER_AREA) ----> search capture
@@ -25,16 +28,22 @@ Pipeline per pair
     each capture: SEM edge-brightening -> optics PSF blur -> sensor noise
                   (+ scan-line correlated noise, search only)
 
-Why the superstructure exists (v1.1 §A): a globally uniform lattice is
-translation-invariant, so the true site carries no more correlation energy than
-any other lattice cell and localization is ill-posed.  Real DRAM fields are
-organised into subarray mats separated by sense-amp and decoder regions, and a
-1000x1000 field at 10x spans many mats -- so block boundaries are visible
-structure that makes the problem well-posed while cells stay locally periodic.
-``--pure-lattice`` reproduces the degenerate uniform world on demand; it is the
-control for the ablation gate and the honest-failure exhibit for the results
-slide.  Note that LINE_INTENSITY_JITTER stays at the spec value of 0.05 -- the
-amendment explicitly forbids papering over the modelling gap by raising it.
+Why the superstructure exists, and why it is aperiodic: a globally uniform
+lattice is translation-invariant, so the true site carries no more correlation
+energy than any other lattice cell and localization is ill-posed (v1.0).  Adding
+*regularly* pitched mat stripes only trades lattice ambiguity for mat ambiguity
+-- measured under v1.1, false peaks landed on exact integer multiples of the
+stripe pitch, ~20 interchangeable mat cells per frame.  v1.2 therefore makes the
+mat spacing irregular (``--mat-jitter``) with absolute pitch bases sized so every
+reference crop straddles at least one stripe of each family.  The stripe
+*spacing sequence* is then a unique code, so a template containing a stripe can
+only align one way.
+
+Two controls are kept permanently: ``--pure-lattice`` (no superstructure at all,
+the degenerate world and our honest-failure exhibit) and ``--mat-jitter 0``
+(superstructure but strictly periodic, the v1.1 model).  LINE_INTENSITY_JITTER
+stays at the spec value of 0.05 throughout -- the amendments explicitly forbid
+papering over a modelling gap by inflating a fake signature.
 
 Where the ground truth comes from (v1.1 §B): the true position is sampled
 *first* in search coordinates as a drift offset from the frame centre (the tool
@@ -85,7 +94,7 @@ from common import (
 # (PROJECT_SPEC.md §9: "keep constants named and documented at the top").
 # --------------------------------------------------------------------------- #
 
-GENERATOR_VERSION = "phase1.1"
+GENERATOR_VERSION = "phase1.2"
 
 # --- geometry (PROJECT_SPEC.md §3.1) ---
 WORLD_SIZE = 10_000          # clean "physical truth" canvas, 100x-equivalent px
@@ -123,20 +132,46 @@ LINE_INTENSITY_JITTER = 0.05
 GLOBAL_BRIGHTNESS_JITTER = 0.03
 GLOBAL_CONTRAST_JITTER = 0.05
 
-# --- DRAM superstructure (SPEC_AMENDMENT_v1.1 §A.1-2) ---
+# --- DRAM superstructure (SPEC_AMENDMENT_v1.2 §A, supersedes v1.1 §A.1-2) ---
 # CITE: [S9] DRAM arrays are organised as subarray mats separated by
 # sense-amplifier stripes and wordline-driver/decoder regions; those block
 # boundaries are visible structure at field scale.
-SA_PITCH_WL_RANGE = (8, 16)          # sense-amp stripe every N word-line pitches (inclusive)
-SA_WIDTH_F_RANGE = (2.0, 4.0)        # stripe width, in units of F
+# CITE: [S12] Real floorplans are NOT exactly periodic at field scale --
+# redundancy/spare rows and columns, edge mats and bank boundaries break mat
+# periodicity.  That aperiodicity is what makes an individual mat cell
+# identifiable: under a strictly regular grid the frame holds ~20 interchangeable
+# mat cells and the true site is merely one of them (measured under v1.1: false
+# peaks landed on exact integer multiples of the stripe pitch, rank median 30).
+MAT_JITTER = 0.25            # spacing irregularity; 0.0 == strictly regular mats
+MAT_JITTER_UP_FACTOR = 1.2   # asymmetric: step ~ base * U(1 - j, 1 + 1.2*j)
+
+# Absolute pitch bases in world px (v1.2 §A.2), no longer F-multiples.  Chosen so
+# the largest realised *clear* gap stays below the 1000 px reference crop, which
+# guarantees by construction that every reference field straddles at least one
+# stripe of each family -- fixing the v1.1 failure mode where 2 of 8 crops
+# contained no superstructure at all:
+#   SA: 720 * (1 + 1.2*0.25) = 936 px step, minus >= 2F = 80 px width  -> <= 856 px
+#   DR: 680 * (1 + 1.2*0.25) = 884 px step, minus >= 3F = 120 px width -> <= 764 px
+# Field-scale stripe density is stylized so a reference field spans mat
+# boundaries; re-tune these two constants once the official Applied Materials
+# starter code is released (4 Aug) -- a one-line change (v1.2 §A.6).
+SA_BASE_RANGE = (550.0, 720.0)       # world px between sense-amp stripes
+DR_BASE_RANGE = (480.0, 680.0)       # world px between driver stripes
+
+SA_WIDTH_F_RANGE = (2.0, 4.0)        # per-stripe width, in units of F
 SA_INTENSITY, SA_INTENSITY_JITTER = 0.45, 0.03
 SA_SUBLINE_COUNT_RANGE = (1, 2)      # faint internal texture so stripes read as
 SA_SUBLINE_WIDTH_F = 0.5             #   circuitry rather than empty voids
 SA_SUBLINE_BOOST = 0.10
 
-DR_PITCH_BL_RANGE = (10, 20)         # driver stripe every N bit-line pitches (inclusive)
-DR_WIDTH_F_RANGE = (3.0, 5.0)        # stripe width, in units of F
+DR_WIDTH_F_RANGE = (3.0, 5.0)        # per-stripe width, in units of F
 DR_INTENSITY, DR_INTENSITY_JITTER = 0.35, 0.03
+
+# Bank boundary (v1.2 §A.4): one extra-wide, extra-dark stripe per axis.  A bank
+# edge is a far larger break than a mat edge, so it is a strong landmark.
+BANK_PROB = 0.7
+BANK_WIDTH_F_RANGE = (8.0, 12.0)
+BANK_INTENSITY, BANK_INTENSITY_JITTER = 0.30, 0.03
 
 # --- contamination particles (SPEC_AMENDMENT_v1.1 §A.3) ---
 # CITE: [S10] Contamination particles are a standard artifact in SEM-based
@@ -289,19 +324,98 @@ def _apply_global_jitter(world: np.ndarray, rng: np.random.Generator) -> tuple[f
 # --------------------------------------------------------------------------- #
 
 
+def _paint_stripe(
+    alpha: np.ndarray,
+    value: np.ndarray,
+    start: float,
+    width: float,
+    intensity: float,
+    subline: tuple[int, float, float] | None = None,
+) -> bool:
+    """Paint one anti-aliased stripe into ``(alpha, value)``; True if visible.
+
+    ``subline`` is ``(count, width_px, boost)``.  Sub-lines are spaced evenly
+    inside the stripe so it reads as circuitry rather than an empty void.
+    """
+    length = alpha.size
+    end = start + width
+    if end <= 0.0 or start >= length:
+        return False
+    i0 = max(0, int(np.floor(start)))
+    i1 = min(length, int(np.ceil(end)) + 1)
+    idx = np.arange(i0, i1, dtype=np.float64)
+    cov = np.clip(np.minimum(end, idx + 1.0) - np.maximum(start, idx), 0.0, 1.0)
+
+    vals = np.full(idx.size, intensity, dtype=np.float64)
+    if subline is not None:
+        count, sub_width, boost = subline
+        for j in range(count):
+            centre = start + width * (j + 1) / (count + 1)
+            s0, s1 = centre - sub_width / 2.0, centre + sub_width / 2.0
+            vals += boost * np.clip(np.minimum(s1, idx + 1.0) - np.maximum(s0, idx), 0.0, 1.0)
+
+    sl = slice(i0, i1)
+    np.maximum(alpha[sl], cov.astype(np.float32), out=alpha[sl])
+    np.copyto(value[sl], vals.astype(np.float32), where=cov > 0.0)
+    return True
+
+
+def _stripe_starts(
+    length: int, base_pitch: float, mat_jitter: float, rng: np.random.Generator
+) -> list[float]:
+    """Irregular stripe positions, generated sequentially (v1.2 §A.1).
+
+    ``pos[k+1] = pos[k] + base_pitch * U(1 - j, 1 + 1.2*j)``.  The asymmetric
+    upper factor keeps the mean spacing slightly above ``base_pitch`` while the
+    *maximum* step stays bounded, which is what the coverage guarantee rests on.
+    ``mat_jitter == 0`` degenerates to exactly regular spacing (the v1.1 model),
+    retained as the middle tier of the three-way ablation.
+
+    The sequence starts two maximal pitches left of the origin with a random
+    phase, so the left edge is covered by the same irregular process as the
+    interior rather than by a special case.
+    """
+    if base_pitch <= 0:
+        raise ValueError(f"base_pitch must be positive, got {base_pitch}")
+    if mat_jitter < 0:
+        raise ValueError(f"mat_jitter must be >= 0, got {mat_jitter}")
+    lo = 1.0 - mat_jitter
+    hi = 1.0 + MAT_JITTER_UP_FACTOR * mat_jitter
+
+    pos = -2.0 * base_pitch * hi + float(rng.uniform(0.0, base_pitch))
+    starts: list[float] = []
+    while pos < length:
+        starts.append(pos)
+        pos += base_pitch * float(rng.uniform(lo, hi))
+    return starts
+
+
+def _max_clear_gap(alpha: np.ndarray) -> int:
+    """Longest run of uncovered pixels in a stripe alpha profile."""
+    covered = np.flatnonzero(alpha > 0.0)
+    if covered.size == 0:
+        return int(alpha.size)
+    interior = int(np.max(np.diff(covered) - 1)) if covered.size > 1 else 0
+    return int(max(interior, covered[0], alpha.size - 1 - covered[-1]))
+
+
 def _stripe_system(
     length: int,
-    pitch: float,
-    width: float,
-    phase: float,
+    base_pitch: float,
+    mat_jitter: float,
+    width_range: tuple[float, float],
     intensity: float,
     intensity_jitter: float,
     rng: np.random.Generator,
+    *,
     subline_count_range: tuple[int, int] | None = None,
     subline_width: float = 0.0,
     subline_boost: float = 0.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Render a periodic stripe system as ``(alpha, value, centers)`` profiles.
+    bank_prob: float = 0.0,
+    bank_width_range: tuple[float, float] | None = None,
+    bank_intensity: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool]:
+    """Render one aperiodic stripe family as ``(alpha, value, centers, has_bank)``.
 
     Unlike the lattice, stripes *replace* what is underneath rather than
     max-compositing with it -- a sense-amp region is different circuitry, not a
@@ -309,56 +423,54 @@ def _stripe_system(
     the world using ``alpha``.  Edges are anti-aliased by fractional coverage
     for the same reason as :func:`_line_profile`.
 
+    Per v1.2 §A.3 the width and intensity are drawn *per stripe*, so the stripe
+    sequence carries a unique code rather than being a repeating unit.
+
     Args:
         length: Profile length in pixels.
-        pitch: Stripe-to-stripe spacing in pixels.
-        width: Stripe width in pixels.
-        phase: Offset of the first stripe's leading edge.
+        base_pitch: Nominal stripe-to-stripe spacing in pixels.
+        mat_jitter: Spacing irregularity (0 = strictly regular).
+        width_range: ``(lo, hi)`` per-stripe width in pixels.
         intensity: Nominal flat stripe intensity.
         intensity_jitter: Half-width of the uniform per-stripe intensity jitter.
         rng: Superstructure RNG stream.
-        subline_count_range: Inclusive ``(lo, hi)`` count of internal sub-lines,
-            or ``None`` for a featureless stripe.
+        subline_count_range: Inclusive ``(lo, hi)`` internal sub-line count, or
+            ``None`` for featureless stripes.
         subline_width: Sub-line width in pixels.
         subline_boost: Intensity added along each sub-line.
+        bank_prob: Probability of adding one extra-wide bank-boundary stripe.
+        bank_width_range: ``(lo, hi)`` bank stripe width in pixels.
+        bank_intensity: Nominal bank stripe intensity.
 
     Returns:
-        ``(alpha, value, centers)``, each 1-D; ``centers`` holds stripe centres.
+        ``(alpha, value, centers, has_bank)``.
     """
-    if pitch <= 0 or width <= 0:
-        raise ValueError(f"pitch and width must be positive, got {pitch}, {width}")
-
     alpha = np.zeros(length, dtype=np.float32)
     value = np.zeros(length, dtype=np.float32)
     centers: list[float] = []
 
-    k_lo = int(np.floor(-phase / pitch)) - 1
-    k_hi = int(np.ceil((length - phase) / pitch)) + 1
-    for k in range(k_lo, k_hi + 1):
-        start = phase + k * pitch
-        end = start + width
-        if end <= 0.0 or start >= length:
-            continue
-        i0 = max(0, int(np.floor(start)))
-        i1 = min(length, int(np.ceil(end)) + 1)
-        idx = np.arange(i0, i1, dtype=np.float64)
-        cov = np.clip(np.minimum(end, idx + 1.0) - np.maximum(start, idx), 0.0, 1.0)
-
-        vals = np.full(idx.size, intensity + float(rng.uniform(-intensity_jitter, intensity_jitter)))
+    for start in _stripe_starts(length, base_pitch, mat_jitter, rng):
+        width = float(rng.uniform(*width_range))
+        inten = intensity + float(rng.uniform(-intensity_jitter, intensity_jitter))
+        subline = None
         if subline_count_range is not None and subline_width > 0.0:
-            n_sub = int(rng.integers(subline_count_range[0], subline_count_range[1] + 1))
-            for j in range(n_sub):
-                centre = start + width * (j + 1) / (n_sub + 1)
-                s0, s1 = centre - subline_width / 2.0, centre + subline_width / 2.0
-                sub_cov = np.clip(np.minimum(s1, idx + 1.0) - np.maximum(s0, idx), 0.0, 1.0)
-                vals += subline_boost * sub_cov
+            count = int(rng.integers(subline_count_range[0], subline_count_range[1] + 1))
+            subline = (count, subline_width, subline_boost)
+        if _paint_stripe(alpha, value, start, width, inten, subline):
+            centers.append(start + width / 2.0)
 
-        sl = slice(i0, i1)
-        np.maximum(alpha[sl], cov.astype(np.float32), out=alpha[sl])
-        np.copyto(value[sl], vals.astype(np.float32), where=cov > 0.0)
-        centers.append(start + width / 2.0)
+    has_bank = False
+    if bank_width_range is not None and float(rng.random()) < bank_prob:
+        bank_width = float(rng.uniform(*bank_width_range))
+        bank_start = float(rng.uniform(0.0, max(1.0, length - bank_width)))
+        bank_value = bank_intensity + float(
+            rng.uniform(-BANK_INTENSITY_JITTER, BANK_INTENSITY_JITTER)
+        )
+        if _paint_stripe(alpha, value, bank_start, bank_width, bank_value, None):
+            centers.append(bank_start + bank_width / 2.0)
+            has_bank = True
 
-    return alpha, value, np.asarray(centers, dtype=np.float64)
+    return alpha, value, np.asarray(sorted(centers), dtype=np.float64), has_bank
 
 
 def _blend_rows(world: np.ndarray, alpha: np.ndarray, value: np.ndarray) -> None:
@@ -374,54 +486,80 @@ def _blend_cols(world: np.ndarray, alpha: np.ndarray, value: np.ndarray) -> None
 
 
 def apply_superstructure(
-    world: np.ndarray, f: float, rng: np.random.Generator
-) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
-    """Overlay sense-amp and wordline-driver stripes in place (v1.1 §A.1-2).
+    world: np.ndarray, f: float, rng: np.random.Generator, mat_jitter: float = MAT_JITTER
+) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Overlay sense-amp and wordline-driver stripes in place (v1.2 §A).
 
     CITE: [S9] Subarray mats are separated by sense-amplifier stripes
     (horizontal) and wordline-driver / decoder regions (vertical); at a 10x
     field these block boundaries are the structure that makes localization
     well-posed while the cells themselves stay locally periodic.
+    CITE: [S12] The spacing is irregular because real floorplans break exact mat
+    periodicity (redundancy/spare rows, edge mats, bank boundaries).  A strictly
+    regular grid would merely trade lattice ambiguity for mat ambiguity.
 
     Order matters and follows the amendment: horizontal sense-amp stripes are
     laid down first, then vertical driver stripes, which therefore win at
     crossings -- matching a floorplan where the driver column runs through.
 
+    Raises:
+        RuntimeError: If the realised clear gap of either family exceeds the
+            capture size, which would break the v1.2 §A.2 guarantee that every
+            reference crop straddles at least one stripe of each family.
+
     Returns:
-        ``(params, sa_centers, dr_centers)``; the centres feed the defect
-        keep-out test in :func:`add_defects`.
+        ``(params, sa_centers, dr_centers, sa_alpha, dr_alpha)``.  The centres
+        feed the defect keep-out test; the alpha profiles let the caller measure
+        per-crop stripe coverage.
     """
-    sa_pitch_units = int(rng.integers(SA_PITCH_WL_RANGE[0], SA_PITCH_WL_RANGE[1] + 1))
-    sa_pitch = sa_pitch_units * WL_PITCH_F * f
-    sa_width = float(rng.uniform(*SA_WIDTH_F_RANGE)) * f
-    sa_alpha, sa_value, sa_centers = _stripe_system(
-        world.shape[0], sa_pitch, sa_width, float(rng.uniform(0.0, sa_pitch)),
+    sa_base = float(rng.uniform(*SA_BASE_RANGE))
+    sa_alpha, sa_value, sa_centers, sa_bank = _stripe_system(
+        world.shape[0], sa_base, mat_jitter,
+        (SA_WIDTH_F_RANGE[0] * f, SA_WIDTH_F_RANGE[1] * f),
         SA_INTENSITY, SA_INTENSITY_JITTER, rng,
         subline_count_range=SA_SUBLINE_COUNT_RANGE,
         subline_width=SA_SUBLINE_WIDTH_F * f,
         subline_boost=SA_SUBLINE_BOOST,
+        bank_prob=BANK_PROB,
+        bank_width_range=(BANK_WIDTH_F_RANGE[0] * f, BANK_WIDTH_F_RANGE[1] * f),
+        bank_intensity=BANK_INTENSITY,
     )
     _blend_rows(world, sa_alpha, sa_value)
 
-    dr_pitch_units = int(rng.integers(DR_PITCH_BL_RANGE[0], DR_PITCH_BL_RANGE[1] + 1))
-    dr_pitch = dr_pitch_units * BL_PITCH_F * f
-    dr_width = float(rng.uniform(*DR_WIDTH_F_RANGE)) * f
-    dr_alpha, dr_value, dr_centers = _stripe_system(
-        world.shape[1], dr_pitch, dr_width, float(rng.uniform(0.0, dr_pitch)),
+    dr_base = float(rng.uniform(*DR_BASE_RANGE))
+    dr_alpha, dr_value, dr_centers, dr_bank = _stripe_system(
+        world.shape[1], dr_base, mat_jitter,
+        (DR_WIDTH_F_RANGE[0] * f, DR_WIDTH_F_RANGE[1] * f),
         DR_INTENSITY, DR_INTENSITY_JITTER, rng,
+        bank_prob=BANK_PROB,
+        bank_width_range=(BANK_WIDTH_F_RANGE[0] * f, BANK_WIDTH_F_RANGE[1] * f),
+        bank_intensity=BANK_INTENSITY,
     )
     _blend_cols(world, dr_alpha, dr_value)
 
     np.clip(world, 0.0, 1.0, out=world)
+
+    sa_gap, dr_gap = _max_clear_gap(sa_alpha), _max_clear_gap(dr_alpha)
+    if max(sa_gap, dr_gap) >= CAPTURE_SIZE:
+        raise RuntimeError(
+            f"stripe coverage guarantee violated (v1.2 §A.2): largest clear gap "
+            f"SA={sa_gap}px DR={dr_gap}px >= capture size {CAPTURE_SIZE}px; a reference "
+            f"crop could contain no superstructure. Lower SA_BASE_RANGE/DR_BASE_RANGE "
+            f"or MAT_JITTER."
+        )
+
     params = {
-        "sa_pitch_px": round(sa_pitch, 2),
-        "sa_width_px": round(sa_width, 2),
-        "dr_pitch_px": round(dr_pitch, 2),
-        "dr_width_px": round(dr_width, 2),
-        "sa_stripes_in_ref": int(np.ceil(CAPTURE_SIZE / sa_pitch)),
-        "dr_stripes_in_ref": int(np.ceil(CAPTURE_SIZE / dr_pitch)),
+        "mat_jitter": mat_jitter,
+        "sa_base_px": round(sa_base, 2),
+        "dr_base_px": round(dr_base, 2),
+        "sa_stripes": int(sa_centers.size),
+        "dr_stripes": int(dr_centers.size),
+        "sa_bank": bool(sa_bank),
+        "dr_bank": bool(dr_bank),
+        "sa_max_clear_gap_px": sa_gap,
+        "dr_max_clear_gap_px": dr_gap,
     }
-    return params, sa_centers, dr_centers
+    return params, sa_centers, dr_centers, sa_alpha, dr_alpha
 
 
 def add_defects(
@@ -569,14 +707,24 @@ def build_world(
     rng_defects: np.random.Generator,
     pure_lattice: bool = False,
     defects: bool = True,
-) -> tuple[np.ndarray, dict[str, Any]]:
+    mat_jitter: float = MAT_JITTER,
+) -> tuple[np.ndarray, dict[str, Any], dict[str, np.ndarray]]:
     """Build the full clean world: lattice, then superstructure, then particles.
 
     ``pure_lattice=True`` skips both superstructure and particles, reproducing
-    the degenerate v1.0 world on demand (v1.1 §A.5).  Because superstructure and
-    defects own separate RNG streams, toggling either flag leaves the lattice
-    and the stage geometry bit-for-bit identical -- which is what makes the
-    §D ablation a controlled comparison.
+    the degenerate v1.0 world on demand (v1.1 §A.5).  ``mat_jitter=0`` keeps the
+    superstructure but makes it strictly periodic, reproducing the v1.1 model.
+    Together those give the three-tier ablation of v1.2 §A.1:
+    pure lattice -> regular mats -> aperiodic mats.
+
+    Because superstructure and defects own separate RNG streams, toggling either
+    flag leaves the lattice and the stage geometry bit-for-bit identical --
+    which is what makes the gate a controlled comparison rather than a redraw.
+
+    Returns:
+        ``(world, params, profiles)``; ``profiles`` carries the stripe alpha
+        profiles (empty for ``pure_lattice``) so the caller can measure per-crop
+        coverage.
     """
     if style == "dram":
         world, params = render_dram_world(rng_structure)
@@ -590,15 +738,17 @@ def build_world(
     if pure_lattice:
         params["n_defects"] = 0
         params["_defects"] = []
-        return world, params
+        return world, params, {}
 
-    super_params, sa_centers, dr_centers = apply_superstructure(world, params["F"], rng_super)
+    super_params, sa_centers, dr_centers, sa_alpha, dr_alpha = apply_superstructure(
+        world, params["F"], rng_super, mat_jitter
+    )
     params.update(super_params)
 
     placed = add_defects(world, rng_defects, sa_centers, dr_centers) if defects else []
     params["n_defects"] = len(placed)
     params["_defects"] = placed
-    return world, params
+    return world, params, {"sa_alpha": sa_alpha, "dr_alpha": dr_alpha}
 
 
 # --------------------------------------------------------------------------- #
@@ -769,6 +919,7 @@ def generate_pair(
     defects: bool = True,
     drift_sigma: float = DRIFT_SIGMA,
     drift_cap: float = DRIFT_CAP,
+    mat_jitter: float = MAT_JITTER,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Generate one reference/search pair plus its ground-truth record.
 
@@ -781,6 +932,7 @@ def generate_pair(
         defects: Sprinkle contamination particles (v1.1 §A.3).
         drift_sigma: Sigma of the drift magnitude, in search px.
         drift_cap: Hard cap on the drift magnitude, in search px.
+        mat_jitter: Mat-spacing irregularity; 0 = strictly regular (v1.2 §A.1).
 
     Returns:
         ``(reference, search, record)``; both images are float32 in
@@ -803,13 +955,34 @@ def generate_pair(
         matrix, rng_geometry, drift_sigma, drift_cap
     )
 
-    world, structure_params = build_world(
+    world, structure_params, profiles = build_world(
         style, rng_structure, rng_super, rng_defects,
-        pure_lattice=pure_lattice, defects=defects,
+        pure_lattice=pure_lattice, defects=defects, mat_jitter=mat_jitter,
     )
 
     x0, y0 = cx - CAPTURE_SIZE // 2, cy - CAPTURE_SIZE // 2
     ref_clean = world[y0:y0 + CAPTURE_SIZE, x0:x0 + CAPTURE_SIZE].copy()
+
+    # --- v1.2 §A.2 per-pair coverage assertion + logging ---
+    coverage: dict[str, Any] = {}
+    if profiles:
+        sa_a = profiles["sa_alpha"][y0:y0 + CAPTURE_SIZE]
+        dr_a = profiles["dr_alpha"][x0:x0 + CAPTURE_SIZE]
+        sa_cov, dr_cov = float(sa_a.mean()), float(dr_a.mean())
+        if sa_cov <= 0.0 or dr_cov <= 0.0:
+            raise RuntimeError(
+                f"pair {index}: reference crop at ({cx}, {cy}) contains no "
+                f"{'sense-amp' if sa_cov <= 0 else 'driver'} stripe (SA {sa_cov:.4f}, "
+                f"DR {dr_cov:.4f}); v1.2 §A.2 guarantees >=1 stripe of each family"
+            )
+        # Union coverage is separable: 1 - mean(1-sa_row) * mean(1-dr_col).
+        coverage = {
+            "sa_coverage_ref_pct": round(100.0 * sa_cov, 2),
+            "dr_coverage_ref_pct": round(100.0 * dr_cov, 2),
+            "superstructure_coverage_ref_pct": round(
+                100.0 * (1.0 - float((1.0 - sa_a).mean()) * float((1.0 - dr_a).mean())), 2
+            ),
+        }
 
     # --- search capture: warp the whole world, then decimate x10 (§3.1.5) ---
     # BORDER_REPLICATE, not the default zero fill: rotating/shrinking the world
@@ -868,6 +1041,7 @@ def generate_pair(
         "b_search": preset["b_search"],
         "expected_template_px": round(CAPTURE_SIZE * scale / DOWNSAMPLE, 2),
         "n_defects_in_ref": n_in_ref,
+        **coverage,
         "seeds": dict(zip(STREAM_NAMES, seeds)),
         "ref_file": f"pairs/pair_{index:04d}_ref.png",
         "search_file": f"pairs/pair_{index:04d}_search.png",
@@ -991,6 +1165,16 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _nonneg_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0, got {parsed}")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser for the dataset generator."""
     parser = argparse.ArgumentParser(
@@ -1022,6 +1206,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="sigma of the navigation drift magnitude, in search px")
     parser.add_argument("--drift-cap", type=_positive_float, default=DRIFT_CAP,
                         help="hard cap on the navigation drift magnitude, in search px")
+    parser.add_argument("--mat-jitter", type=_nonneg_float, default=MAT_JITTER,
+                        help="mat-spacing irregularity; 0 = strictly regular mats "
+                             "(the v1.1 model, kept as the middle ablation tier)")
     return parser
 
 
@@ -1032,6 +1219,7 @@ def _iter_pairs(args: argparse.Namespace) -> Iterator[tuple[int, np.ndarray, np.
             index, args.style, args.noise_level, args.seed,
             pure_lattice=args.pure_lattice, defects=args.defects,
             drift_sigma=args.drift_sigma, drift_cap=args.drift_cap,
+            mat_jitter=args.mat_jitter,
         )
         yield index, reference, search, record, time.perf_counter() - started
 
@@ -1050,8 +1238,12 @@ def main(argv: list[str] | None = None) -> int:
     pairs_dir = ensure_dir(out_dir / "pairs")
     preview_dir = ensure_dir(out_dir / "previews") if args.preview else None
 
-    world_kind = "pure lattice (degenerate control)" if args.pure_lattice else \
-                 f"lattice + superstructure, defects={'on' if args.defects else 'off'}"
+    if args.pure_lattice:
+        world_kind = "pure lattice (degenerate control)"
+    else:
+        mats = "aperiodic mats" if args.mat_jitter > 0 else "REGULAR mats (v1.1 control)"
+        world_kind = (f"lattice + superstructure, {mats} (jitter={args.mat_jitter:g}), "
+                      f"defects={'on' if args.defects else 'off'}")
     print(f"Drift-Sense dataset generator ({GENERATOR_VERSION})")
     print(f"  style={args.style}  pairs={args.num_pairs}  noise={args.noise_level}  "
           f"seed={args.seed}  out={out_dir}")
@@ -1060,8 +1252,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  model={world_kind}")
     print(f"  drift prior: sigma={args.drift_sigma:.0f}px  cap={args.drift_cap:.0f}px")
     print()
-    header = (f"{'pair':<11}{'F':>7}{'theta':>9}{'scale':>9}{'GT x':>10}{'GT y':>10}"
-              f"{'drift':>8}{'SA px':>9}{'DR px':>9}{'def':>5}{'sec':>7}")
+    header = (f"{'pair':<11}{'F':>7}{'theta':>9}{'scale':>9}{'GT x':>9}{'GT y':>9}"
+              f"{'drift':>7}{'SA base':>9}{'DR base':>9}{'cov%':>7}{'bank':>6}{'def':>5}{'sec':>7}")
     print(header)
     print("-" * len(header))
 
@@ -1073,24 +1265,27 @@ def main(argv: list[str] | None = None) -> int:
         if preview_dir is not None:
             save_preview(preview_dir / f"pair_{index:04d}_preview.png", reference, search, record)
         records.append(record)
+        bank = "".join(c for c, k in (("S", "sa_bank"), ("D", "dr_bank")) if record.get(k)) or "-"
         print(f"{record['id']:<11}{record['F']:>7.1f}{record['theta_deg']:>+9.3f}"
-              f"{record['scale']:>9.4f}{record['true_x']:>10.2f}{record['true_y']:>10.2f}"
-              f"{record['drift_px']:>8.1f}{record.get('sa_pitch_px', float('nan')):>9.1f}"
-              f"{record.get('dr_pitch_px', float('nan')):>9.1f}"
-              f"{record.get('n_defects', 0):>5d}{elapsed:>7.2f}")
+              f"{record['scale']:>9.4f}{record['true_x']:>9.2f}{record['true_y']:>9.2f}"
+              f"{record['drift_px']:>7.1f}{record.get('sa_base_px', float('nan')):>9.1f}"
+              f"{record.get('dr_base_px', float('nan')):>9.1f}"
+              f"{record.get('superstructure_coverage_ref_pct', float('nan')):>7.1f}"
+              f"{bank:>6}{record.get('n_defects', 0):>5d}{elapsed:>7.2f}")
 
     total = time.perf_counter() - t_start
     gt_path = out_dir / "ground_truth.json"
     payload = {
         "meta": {
             "generator_version": GENERATOR_VERSION,
-            "spec": "PROJECT_SPEC.md §3 + SPEC_AMENDMENT_v1.1 §A/§B",
+            "spec": "PROJECT_SPEC.md §3 + SPEC_AMENDMENT_v1.1 §B + SPEC_AMENDMENT_v1.2 §A",
             "style": args.style,
             "noise_level": args.noise_level,
             "seed": args.seed,
             "num_pairs": args.num_pairs,
             "pure_lattice": args.pure_lattice,
             "defects": args.defects,
+            "mat_jitter": args.mat_jitter,
             "drift_sigma": args.drift_sigma,
             "drift_cap": args.drift_cap,
             "world_size": WORLD_SIZE,
