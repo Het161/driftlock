@@ -18,6 +18,8 @@ Nothing is written outside the temporary directory, which is removed on exit.
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import json
 import subprocess
 import sys
@@ -64,8 +66,29 @@ def _run(args: list[str], label: str) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser (PROJECT_SPEC.md §2 requires --help on every script)."""
+    parser = argparse.ArgumentParser(
+        prog="smoke_test.py",
+        description="End-to-end fresh-machine check: generate a small dataset, localize "
+                    "every pair through the real localize.py CLI, and verify the answers.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        epilog=f"Passes when >= {MIN_HITS} of {N_PAIRS} pairs land within "
+               f"{HIT_TOLERANCE_PX:g} px, the median error is under "
+               f"{MAX_MEDIAN_ERROR_PX:g} px, and the whole run finishes in "
+               f"{MAX_TOTAL_SECONDS:g} s. Exits 0 on PASS, 1 on FAIL.",
+    )
+    parser.add_argument("--seed", type=int, default=SEED,
+                        help="master seed for the generated pairs")
+    parser.add_argument("--keep", type=Path, default=None, metavar="DIR",
+                        help="keep the generated dataset here instead of a temp dir "
+                             "that is deleted on exit")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
     """Run the smoke test.  Returns 0 on PASS, 1 on FAIL."""
+    args = build_parser().parse_args(argv)
     started = time.perf_counter()
     failures: list[str] = []
 
@@ -83,12 +106,16 @@ def main() -> int:
           f"total < {MAX_TOTAL_SECONDS:g} s")
     print()
 
-    with tempfile.TemporaryDirectory(prefix="driftsense_smoke_") as tmp:
-        data_dir = Path(tmp) / "data"
+    with contextlib.ExitStack() as stack:
+        if args.keep is not None:
+            data_dir = args.keep / "data"
+        else:
+            tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="driftsense_smoke_"))
+            data_dir = Path(tmp) / "data"
 
         print("[1/2] generating dataset via generate_dataset.py")
         gen = _run(["generate_dataset.py", "--num-pairs", str(N_PAIRS),
-                    "--noise-level", NOISE_LEVEL, "--seed", str(SEED),
+                    "--noise-level", NOISE_LEVEL, "--seed", str(args.seed),
                     "--output-dir", str(data_dir)], "generate_dataset.py")
         if gen.returncode != 0:
             print("\nRESULT: FAIL")
