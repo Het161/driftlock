@@ -103,7 +103,7 @@ from common import (
 # (PROJECT_SPEC.md §9: "keep constants named and documented at the top").
 # --------------------------------------------------------------------------- #
 
-GENERATOR_VERSION = "phase1.4"
+GENERATOR_VERSION = "phase1.5"
 
 # --- geometry (PROJECT_SPEC.md §3.1) ---
 WORLD_SIZE = 10_000          # clean "physical truth" canvas, 100x-equivalent px
@@ -1437,7 +1437,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "meta": {
             "generator_version": GENERATOR_VERSION,
-            "spec": ("docs/PROJECT_SPEC.md §3 + SPEC_AMENDMENT v1.1 §B + v1.2 §A + v1.3 §A/§B + v1.4"),
+            "spec": ("docs/PROJECT_SPEC.md §3 + SPEC_AMENDMENT v1.1 §B + v1.2 §A "
+                     "+ v1.3 §A/§B + v1.4 + v1.5 §A"),
             "style": args.style,
             "noise_level": args.noise_level,
             "seed": args.seed,

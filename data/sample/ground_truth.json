@@ -1,7 +1,7 @@
 {
   "meta": {
-    "generator_version": "phase1.4",
-    "spec": "docs/PROJECT_SPEC.md \u00a73 + SPEC_AMENDMENT v1.1 \u00a7B + v1.2 \u00a7A + v1.3 \u00a7A/\u00a7B + v1.4",
+    "generator_version": "phase1.5",
+    "spec": "docs/PROJECT_SPEC.md \u00a73 + SPEC_AMENDMENT v1.1 \u00a7B + v1.2 \u00a7A + v1.3 \u00a7A/\u00a7B + v1.4 + v1.5 \u00a7A",
     "style": "dram + finfet (one sample of each)",
     "noise_level": "medium",
     "seed": "42 (dram) / 20260925 (finfet)",
