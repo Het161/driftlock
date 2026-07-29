@@ -210,8 +210,13 @@ def _conditions(n: int) -> list[Condition]:
         Condition(
             "--commensurate-mats, capture noise",
             dict(warp=False, capture=True, pure_lattice=False, commensurate=True),
-            "rank med in [2, 60]",
-            lambda errs, ranks, n0: 2.0 <= float(np.median(ranks)) <= 60.0,
+            "rank med in [2, 300]",
+            # Band widened from [2, 60]: the defect reproduces harder in denser geometry --
+            # v1.3 mats put ~16x18 interchangeable cells in a frame against v1.1's ~20, which
+            # raises the ceiling on how many can outscore the truth, and the per-pair spread
+            # widens with it (observed 1..119 at n=8, median 30 at n=24). A tight ceiling
+            # would trip on sampling noise rather than on a real regression.
+            lambda errs, ranks, n0: 2.0 <= float(np.median(ranks)) <= 300.0,
             is_control=True,
         ),
         Condition(
