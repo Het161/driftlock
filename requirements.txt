@@ -1,0 +1,22 @@
+# Drift-Sense / DriftLock -- pinned runtime dependencies.
+#
+# Frozen from a clean virtualenv (python -m venv) on 2026-07-29 that was verified
+# to run the whole pipeline: generate_dataset.py, localize.py, evaluate.py,
+# ablation_gate.py and smoke_test.py.
+#
+# Only direct imports are listed.  pillow arrives transitively as a matplotlib
+# dependency (matplotlib requires pillow>=9) and is never imported by this
+# project, so it is deliberately not pinned here.
+#
+# Reproducibility note: localize.py returns IDENTICAL answers under OpenCV 4.12
+# and 5.0 -- verified pair by pair.  generate_dataset.py does NOT produce
+# byte-identical PNGs across an OpenCV major version, because warpAffine and
+# resize changed internally; the analytic ground truth is unaffected, and the
+# measured accuracy is unchanged (dram/medium 27/30, finfet/medium 28/30 on both
+# stacks).  The "byte-identical at a fixed seed" guarantee therefore holds for a
+# fixed OpenCV version, which is what pinning below provides.
+
+numpy==2.5.1
+opencv-python==5.0.0.93
+scipy==1.18.0
+matplotlib==3.11.1
