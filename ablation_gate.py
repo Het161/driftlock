@@ -190,19 +190,19 @@ class Condition:
 def _conditions(n: int) -> list[Condition]:
     return [
         Condition(
-            "v1.3 world, clean, no warp",
+            "v1.4 world, clean, no warp",
             dict(warp=False, capture=False, pure_lattice=False),
             "rank0 >= 7/8, err med < 3px",
             lambda errs, ranks, n0: n0 >= int(np.ceil(7 * n / 8)) and float(np.median(errs)) < 3.0,
         ),
         Condition(
-            "v1.3 world, capture noise (medium)",
+            "v1.4 world, capture noise (medium)",
             dict(warp=False, capture=True, pure_lattice=False),
             "rank0 >= 6/8, err med < 5px",
             lambda errs, ranks, n0: n0 >= int(np.ceil(6 * n / 8)) and float(np.median(errs)) < 5.0,
         ),
         Condition(
-            "v1.3 world, capture noise + warp",
+            "v1.4 world, capture noise + warp",
             dict(warp=True, capture=True, pure_lattice=False),
             "err med < 10px",
             lambda errs, ranks, n0: float(np.median(errs)) < 10.0,

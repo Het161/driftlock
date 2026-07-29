@@ -103,7 +103,7 @@ from common import (
 # (PROJECT_SPEC.md §9: "keep constants named and documented at the top").
 # --------------------------------------------------------------------------- #
 
-GENERATOR_VERSION = "phase1.3"
+GENERATOR_VERSION = "phase1.4"
 
 # --- geometry (PROJECT_SPEC.md §3.1) ---
 WORLD_SIZE = 10_000          # clean "physical truth" canvas, 100x-equivalent px
@@ -154,28 +154,33 @@ GLOBAL_CONTRAST_JITTER = 0.05
 MAT_JITTER = 0.25            # spacing irregularity; 0.0 == strictly regular mats
 MAT_JITTER_UP_FACTOR = 1.2   # asymmetric: step ~ base * U(1 - j, 1 + 1.2*j)
 
-# Absolute pitch bases in world px (v1.2 §A.2), no longer F-multiples.  Chosen so
-# the largest realised *clear* gap stays below the 1000 px reference crop, which
-# guarantees by construction that every reference field straddles at least one
-# stripe of each family -- fixing the v1.1 failure mode where 2 of 8 crops
-# contained no superstructure at all:
-#   SA: 720 * (1 + 1.2*0.25) = 936 px step, minus >= 2F = 80 px width  -> <= 856 px
-#   DR: 680 * (1 + 1.2*0.25) = 884 px step, minus >= 3F = 120 px width -> <= 764 px
+# The two stripe families are ISOTROPIC as of v1.4: identical contrast, width and
+# pitch.  Up to v1.3 they differed (SA 0.45 / U(50,110) / U(550,720) against
+# DR 0.35 / U(60,140) / U(480,680)), which handed the vertical family roughly 5x
+# the discriminating variance of the horizontal one -- contrast against the ~0.85
+# array enters squared, so 0.20^2 vs 0.10^2, times width/pitch.  The measured
+# consequence was a purely anisotropic failure: x pinned to sub-pixel while y lost
+# to whole-word-line-pitch shifts (Phase 2 baseline, 7/10 at 10 px; every miss had
+# |dx| < 9 px and |dy| of 243-287 px, with dy/WL landing on exact integers).
+# Nothing physical ever justified the asymmetry -- it was an arbitrary choice --
+# so v1.4 removes it.  Keep these equal unless a physical argument says otherwise.
+#
+# Pitch bases are absolute world px (v1.2 §A.2), sized so the largest realised
+# *clear* gap stays below the 1000 px reference crop, which guarantees by
+# construction that every reference field straddles at least one stripe of each
+# family:  700 * (1 + 1.2*0.25) = 910 px step, minus the 55 px minimum width
+# -> <= 855 px < 1000 px.  Asserted per world in apply_superstructure().
 # Field-scale stripe density is stylized so a reference field spans mat
-# boundaries; re-tune these two constants once the official Applied Materials
-# starter code is released (4 Aug) -- a one-line change (v1.2 §A.6).
-SA_BASE_RANGE = (550.0, 720.0)       # world px between sense-amp stripes
-DR_BASE_RANGE = (480.0, 680.0)       # world px between driver stripes
+# boundaries; re-tune these once the official Applied Materials starter code is
+# released (4 Aug) -- a one-line change (v1.2 §A.6).
+STRIPE_BASE_RANGE = (500.0, 700.0)     # world px between stripes, both families
+STRIPE_WIDTH_RANGE_PX = (55.0, 125.0)  # per-stripe width, both families
+STRIPE_INTENSITY, STRIPE_INTENSITY_JITTER = 0.35, 0.03
 
-# Stripe widths are ABSOLUTE world px (v1.3 §B), no longer F-multiples.  Tying
-# width to F made high-F fields peripheral-dominated -- stripes wider than the
-# mats they separate, ~60% coverage, an array reduced to slivers.  A real DRAM
-# field is array-dominated with thin circuitry bands between mats, and a
-# fab-engineer judge would notice the difference immediately.
-SA_WIDTH_RANGE_PX = (50.0, 110.0)    # per-stripe sense-amp band width
-DR_WIDTH_RANGE_PX = (60.0, 140.0)    # per-stripe driver band width
-SA_INTENSITY, SA_INTENSITY_JITTER = 0.45, 0.03
-DR_INTENSITY, DR_INTENSITY_JITTER = 0.35, 0.03
+SA_BASE_RANGE = DR_BASE_RANGE = STRIPE_BASE_RANGE
+SA_WIDTH_RANGE_PX = DR_WIDTH_RANGE_PX = STRIPE_WIDTH_RANGE_PX
+SA_INTENSITY, SA_INTENSITY_JITTER = STRIPE_INTENSITY, STRIPE_INTENSITY_JITTER
+DR_INTENSITY, DR_INTENSITY_JITTER = STRIPE_INTENSITY, STRIPE_INTENSITY_JITTER
 
 # Internal sub-line texture, so a stripe reads as circuitry rather than a void.
 # Width scales with the (now much thinner) stripe; a narrow band only has room
@@ -1352,7 +1357,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "meta": {
             "generator_version": GENERATOR_VERSION,
-            "spec": ("docs/PROJECT_SPEC.md §3 + SPEC_AMENDMENT v1.1 §B + v1.2 §A + v1.3 §A/§B"),
+            "spec": ("docs/PROJECT_SPEC.md §3 + SPEC_AMENDMENT v1.1 §B + v1.2 §A + v1.3 §A/§B + v1.4"),
             "style": args.style,
             "noise_level": args.noise_level,
             "seed": args.seed,
