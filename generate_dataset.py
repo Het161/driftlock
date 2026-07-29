@@ -206,14 +206,45 @@ DEFECT_MIN_CROSSING_DIST = 300.0     # keep particles incidental, not landmarks
 DEFECT_MAX_PLACE_TRIES = 64
 DEFECT_STAMP_SIGMAS = 4.0            # render radius, in units of sigma
 
-# --- FinFET structure (PROJECT_SPEC.md §3.1.3, secondary / EXPERIMENTAL) ---
+# --- FinFET structure (PROJECT_SPEC.md §3.1.3 + SPEC_AMENDMENT_v1.5) --------
+# CITE: [S13] Standard-cell logic is organised into rows of fixed height,
+# separated by row-boundary bands (power rails / n-well edges), with diffusion
+# breaks between cells and dummy gates at cell edges.  The contacted poly pitch
+# (CPP) is regular by construction; the rows, breaks and dummies are what vary.
 FIN_PITCH_F, FIN_WIDTH_F, FIN_INTENSITY = 1.5, 0.5, 0.80
 GATE_WIDTH_F, GATE_INTENSITY, GATE_CROSS_INTENSITY = 2.0, 0.90, 0.98
-# The spec says "1-2 horizontal gate bars"; that is read as 1-2 bars *per field
-# of view* (a 1000 px capture), so the world-level gate pitch is drawn to put
-# 1-2 bars in any 1000 px window.  A literal 1-2 bars across the whole 10000 px
-# world would leave most crops with a purely periodic fin grating.
-FINFET_GATE_PITCH_RANGE = (600.0, 1000.0)
+
+# Why v1.5 exists: a fin field is a 1-D grating.  Fins repeat in x and are
+# perfectly uniform in y, so between gate bars there is nothing at all to fix y.
+# Phase 4 measured the consequence -- FinFET trailed DRAM by ~10 points at every
+# noise level, every failure was pure-y, and the correlation surface degenerated
+# into horizontal ridges spanning the full frame (dy landing on integer multiples
+# of the gate pitch).  That is the pure-lattice degeneracy marginalised onto one
+# axis.  The fix is the y-structure real logic actually has: cell rows.
+#
+# Gate pitch stays REGULAR -- CPP is regular in real logic, and pretending
+# otherwise would be inventing physics to make the maths easier.  Tightened from
+# v1.4's U(600,1000) so a 1000 px reference crop is guaranteed to contain a gate
+# bar with margin rather than by a hair (max clear gap 750 - 2F = 590..670 px).
+FINFET_GATE_PITCH_RANGE = (450.0, 750.0)
+
+#: Standard-cell row boundaries: horizontal bands at semi-regular pitch.  These
+#: carry the aperiodic y-signature the fin field cannot.
+ROW_BASE_RANGE = (400.0, 620.0)      # world px between cell-row boundaries
+ROW_JITTER = 0.18                    # semi-regular: rows vary, gates do not
+ROW_WIDTH_RANGE_PX = (30.0, 70.0)
+ROW_INTENSITY, ROW_INTENSITY_JITTER = 0.55, 0.04
+
+#: Diffusion breaks: irregular horizontal cuts where the active region ends and
+#: the fins are interrupted.
+DIFF_BREAK_RATE = 26.0               # Poisson mean count across the world
+DIFF_BREAK_WIDTH_RANGE_PX = (20.0, 55.0)
+DIFF_BREAK_INTENSITY = 0.22
+
+#: Dummy-gate doublets: a second bar placed one half-pitch off an existing gate.
+#: Occasional, so the gate sequence carries a code without disturbing the CPP.
+DUMMY_GATE_PROB = 0.30
+DUMMY_GATE_OFFSET_FRAC = 0.34        # of the gate pitch
 
 # --- SEM edge-brightening (PROJECT_SPEC.md §3.2) ---
 # CITE: [S4] SEM edge effect -- secondary-electron yield rises at feature edges,
@@ -739,6 +770,19 @@ def render_finfet_world(rng: np.random.Generator) -> tuple[np.ndarray, dict[str,
         GATE_INTENSITY, LINE_INTENSITY_JITTER, BACKGROUND, rng,
     )
 
+    # Dummy-gate doublets: an occasional second bar offset from a real gate.
+    # The CPP stays regular; what varies is which gates carry a dummy, and that
+    # sequence is a per-world code (v1.5, CITE [S13]).
+    n_dummy = 0
+    for centre in gate_centers:
+        if float(rng.random()) >= DUMMY_GATE_PROB:
+            continue
+        start = centre + DUMMY_GATE_OFFSET_FRAC * gate_pitch - GATE_WIDTH_F * f / 2.0
+        if _paint_stripe(gate_alpha, gate_value, start, GATE_WIDTH_F * f,
+                         GATE_INTENSITY + float(rng.uniform(-LINE_INTENSITY_JITTER,
+                                                            LINE_INTENSITY_JITTER)), None):
+            n_dummy += 1
+
     world = np.maximum(gate_value[:, None], fin_value[None, :])
     # Fin-gate crossings emit more strongly than either feature alone.
     boost = np.multiply(gate_alpha[:, None], fin_alpha[None, :])
@@ -747,12 +791,48 @@ def render_finfet_world(rng: np.random.Generator) -> tuple[np.ndarray, dict[str,
     del boost
     np.clip(world, 0.0, 1.0, out=world)
 
+    # Standard-cell row boundaries (v1.5): horizontal bands at semi-regular
+    # pitch.  This is the y-structure the fin grating cannot provide, and it is
+    # what real logic actually looks like at field scale.
+    row_alpha, row_value, row_centers, _ = _stripe_system(
+        WORLD_SIZE, float(rng.uniform(*ROW_BASE_RANGE)), ROW_JITTER,
+        ROW_WIDTH_RANGE_PX, ROW_INTENSITY, ROW_INTENSITY_JITTER, rng,
+    )
+    _blend_rows(world, row_alpha, row_value)
+
+    # Diffusion breaks: irregular horizontal cuts through the active region.
+    n_breaks = 0
+    for _ in range(int(rng.poisson(DIFF_BREAK_RATE))):
+        width = float(rng.uniform(*DIFF_BREAK_WIDTH_RANGE_PX))
+        start = float(rng.uniform(-width, WORLD_SIZE))
+        brk_alpha = np.zeros(WORLD_SIZE, np.float32)
+        brk_value = np.zeros(WORLD_SIZE, np.float32)
+        if _paint_stripe(brk_alpha, brk_value, start, width, DIFF_BREAK_INTENSITY, None):
+            _blend_rows(world, brk_alpha, brk_value)
+            n_breaks += 1
+    np.clip(world, 0.0, 1.0, out=world)
+
+    row_gap = _max_clear_gap(row_alpha)
+    gate_gap = _max_clear_gap(gate_alpha)
+    if max(row_gap, gate_gap) >= CAPTURE_SIZE:
+        raise RuntimeError(
+            f"FinFET coverage guarantee violated (v1.5): largest clear gap "
+            f"rows={row_gap}px gates={gate_gap}px >= capture size {CAPTURE_SIZE}px; a "
+            f"reference crop could contain no row boundary or no gate bar. Lower "
+            f"ROW_BASE_RANGE or FINFET_GATE_PITCH_RANGE."
+        )
+
     gain, bias = _apply_global_jitter(world, rng)
     params = {
         "F": round(f, 4),
         "fin_pitch_px": round(FIN_PITCH_F * f, 4),
         "gate_pitch_px": round(gate_pitch, 4),
         "n_gate_bars": int(gate_centers.size),
+        "n_dummy_gates": n_dummy,
+        "n_row_boundaries": int(row_centers.size),
+        "n_diffusion_breaks": n_breaks,
+        "row_max_clear_gap_px": row_gap,
+        "gate_max_clear_gap_px": gate_gap,
         "global_gain": round(gain, 4),
         "global_bias": round(bias, 4),
     }

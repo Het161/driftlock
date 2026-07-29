@@ -57,7 +57,7 @@ ERROR_FLOOR_PX = 0.01
 CSV_COLUMNS = [
     "id", "style", "noise_level", "pure_lattice",
     "pred_x", "pred_y", "true_x", "true_y", "error_px",
-    "runtime_ms", "confidence", "psr", "ambiguous", "n_candidates",
+    "runtime_ms", "confidence", "psr", "ambiguous", "ambig_x", "ambig_y", "n_candidates",
     "centre_rule_applied", "theta_deg", "scale", "drift_px", "source",
 ]
 
@@ -79,6 +79,8 @@ class PairResult:
     confidence: float
     psr: float
     ambiguous: bool
+    ambig_x: bool
+    ambig_y: bool
     n_candidates: int
     centre_rule_applied: bool
     theta_deg: float
@@ -149,6 +151,7 @@ def evaluate_dir(
             extra = {
                 "confidence": result.confidence, "psr": result.psr,
                 "ambiguous": result.ambiguous, "n_candidates": result.n_candidates,
+                "ambig_x": result.ambig_x, "ambig_y": result.ambig_y,
                 "centre_rule_applied": result.centre_rule_applied,
             }
 
@@ -161,6 +164,8 @@ def evaluate_dir(
             confidence=float(extra["confidence"]),
             psr=float(extra["psr"]),
             ambiguous=bool(extra["ambiguous"]),
+            ambig_x=bool(extra.get("ambig_x", False)),
+            ambig_y=bool(extra.get("ambig_y", False)),
             n_candidates=int(extra["n_candidates"]),
             centre_rule_applied=bool(extra["centre_rule_applied"]),
             source="subprocess" if use_subprocess else "import",
@@ -217,6 +222,7 @@ def summarize(rows: Sequence[PairResult], tolerance: float) -> dict[str, Any]:
     err = np.array([r.error_px for r in rows])
     rt = np.array([r.runtime_ms for r in rows])
     amb = np.array([r.ambiguous for r in rows])
+    amb_x = np.array([r.ambig_x for r in rows]); amb_y = np.array([r.ambig_y for r in rows])
     n = len(rows)
     hit = int((err <= tolerance).sum())
     p = hit / n
@@ -233,6 +239,7 @@ def summarize(rows: Sequence[PairResult], tolerance: float) -> dict[str, Any]:
         "max_err": float(err.max()),
         "mean_ms": float(rt.mean()),
         "ambiguity_rate": float(amb.mean()),
+        "ambig_x_rate": float(amb_x.mean()), "ambig_y_rate": float(amb_y.mean()),
     }
 
 
@@ -243,13 +250,14 @@ def summary_line(label: str, stats: dict[str, Any], tolerance: float) -> str:
     return (f"{label:<30}{stats['hit']:>4}/{stats['n']:<4}{100 * stats['rate']:>6.0f}%"
             f"{stats[f'hit@{int(SECONDARY_TOLERANCE_PX)}']:>6}/{stats['n']:<4}"
             f"{stats['mean_err']:>9.2f}{stats['median_err']:>9.2f}{stats['p95_err']:>9.2f}"
-            f"{100 * stats['ambiguity_rate']:>8.0f}%{stats['mean_ms']:>9.0f}")
+            f"{100 * stats['ambig_x_rate']:>7.0f}%{100 * stats['ambig_y_rate']:>7.0f}%"
+            f"{stats['mean_ms']:>8.0f}")
 
 
 def summary_header(tolerance: float) -> str:
     return (f"{'group':<30}{f'<={tolerance:g}px':>10}{'rate':>6}"
             f"{f'<={SECONDARY_TOLERANCE_PX:g}px':>11}{'mean':>9}{'median':>9}{'p95':>9}"
-            f"{'ambig':>9}{'ms':>9}")
+            f"{'amb_x':>8}{'amb_y':>7}{'ms':>8}")
 
 
 def write_csv(path: Path, rows: Iterable[PairResult]) -> None:

@@ -135,6 +135,25 @@ PSR_WINDOW = 11
 AMBIGUITY_PSR_MIN = 2.5
 AMBIGUITY_CANDIDATES_MAX = 20
 
+#: Axis-resolved ambiguity (Phase 4.5).  Degeneracy is often confined to ONE
+#: axis: a FinFET fin field is a 1-D grating, so rival peaks stack up in a
+#: vertical line -- same x, scattered y -- and the correlation surface shows
+#: horizontal ridges.  Collapsing that to a single boolean throws away the fact
+#: that x was determined perfectly.
+#:
+#: An axis counts as degenerate when the rival candidates span more than this
+#: fraction of the SEARCH FRAME along it -- "the rivals are spread across the
+#: whole image", not merely "there is more than one".  The frame, not the
+#: template, is the right yardstick: two candidates a template-width apart is a
+#: normal near-tie, whereas candidates strewn across the frame means the image
+#: genuinely does not determine that coordinate.
+#:
+#: Calibrated on seed 20260910 to separate populations, exactly as the Phase 3
+#: gate was.  Accuracy is FLAT across every value tried (0.25 to 8.0 template
+#: widths moved dram 19-21/24 and finfet 19-21/24 -- pure noise), so this
+#: threshold is chosen to make the *flag* informative, not to buy accuracy.
+COLLINEAR_TOL_FRAME_FRAC = 0.60
+
 #: Whether the official closest-to-centre tie-break fires only when the gate
 #: above trips, or on every near-tie as PROJECT_SPEC.md §5.2 states literally.
 #:
@@ -171,11 +190,13 @@ class LocalizationResult:
     y: float
     confidence: float          # peak TM_CCOEFF_NORMED score, in [-1, 1]
     psr: float | None          # peak-to-sidelobe ratio (§5.4)
-    ambiguous: bool | None     # ambiguity gate tripped (§5.2)
+    ambiguous: bool | None     # ambiguity gate tripped on either axis (§5.2)
     template_size: int
     search_size: tuple[int, int]
     runtime_ms: float
     method: str = "baseline-ncc-single-scale"
+    ambig_x: bool = False               # rival peaks disagree about x
+    ambig_y: bool = False               # rival peaks disagree about y
     scale: float | None = None          # best scale from the sweep
     theta_deg: float | None = None      # best rotation from the sweep
     peak_gap: float | None = None       # winner minus best separated rival
@@ -390,18 +411,35 @@ def localize(
 
     psr = _psr(corr, px, py)
     gap = _peak_gap(corr, px, py, min_sep)   # diagnostic only; does not separate
-    ambiguous = bool(psr < AMBIGUITY_PSR_MIN or xs.size > AMBIGUITY_CANDIDATES_MAX)
 
-    # 6. the official tie-break, fired ONLY when the gate trips.  Applying it to
-    #    every loose tie measured net-negative (20/24 -> 18/24 in Phase 2): the
-    #    drift prior puts the truth a mean 103 px off centre, so the truth is
-    #    frequently not the centre-most candidate.
+    # Axis-resolved: how far do the rival candidates actually disagree, per axis?
+    cx_c = xs + tpl_w / 2.0
+    cy_c = ys + tpl_h / 2.0
+    tol_x = COLLINEAR_TOL_FRAME_FRAC * search_n.shape[1]
+    tol_y = COLLINEAR_TOL_FRAME_FRAC * search_n.shape[0]
+    spread_x = float(cx_c.max() - cx_c.min()) if xs.size > 1 else 0.0
+    spread_y = float(cy_c.max() - cy_c.min()) if xs.size > 1 else 0.0
+    # A globally degenerate field (very low PSR, or a swarm of rivals) is
+    # ambiguous on both axes regardless of how the candidates happen to line up.
+    degenerate = bool(psr < AMBIGUITY_PSR_MIN or xs.size > AMBIGUITY_CANDIDATES_MAX)
+    ambig_x = bool(degenerate or spread_x > tol_x)
+    ambig_y = bool(degenerate or spread_y > tol_y)
+    ambiguous = bool(ambig_x or ambig_y)
+
+    # 6. the official tie-break, applied PER DEGENERATE AXIS only.  Scoring
+    #    candidates by distance to the frame centre along the ambiguous axes
+    #    alone preserves whichever axis the image already determined -- the
+    #    FinFET ridge case knows x to a fraction of a pixel and only needs help
+    #    with y.  Firing it on every loose tie measured net-negative in Phase 2.
     centre_applied = False
     if (ambiguous or not CENTRE_RULE_ONLY_WHEN_AMBIGUOUS) and xs.size > 1:
-        cx_c = xs + tpl_w / 2.0
-        cy_c = ys + tpl_h / 2.0
         centre = (search_n.shape[1] / 2.0, search_n.shape[0] / 2.0)
-        pick = int(np.argmin(np.hypot(cx_c - centre[0], cy_c - centre[1])))
+        cost = np.zeros(xs.size, dtype=np.float64)
+        if ambig_x:
+            cost += (cx_c - centre[0]) ** 2
+        if ambig_y:
+            cost += (cy_c - centre[1]) ** 2
+        pick = int(np.argmin(cost))
         if pick != 0:
             px, py = int(xs[pick]), int(ys[pick])
             centre_applied = True
@@ -418,6 +456,8 @@ def localize(
         confidence=float(corr[py, px]),
         psr=float(psr),
         ambiguous=ambiguous,
+        ambig_x=ambig_x,
+        ambig_y=ambig_y,
         template_size=int(tpl_w),
         search_size=(int(search.shape[1]), int(search.shape[0])),
         runtime_ms=(time.perf_counter() - started) * 1000.0,
@@ -588,7 +628,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"localized in {result.runtime_ms:.0f} ms  peak NCC {result.confidence:.4f}  "
           f"psr {result.psr:.1f}  scale {result.scale:.2f}  theta {result.theta_deg:+.1f}deg  "
-          f"{'AMBIGUOUS' if result.ambiguous else 'unambiguous'}"
+          f"{'AMBIGUOUS[' + ('x' if result.ambig_x else '') + ('y' if result.ambig_y else '') + ']'
+             if result.ambiguous else 'unambiguous'}"
           f"{' (centre rule fired)' if result.centre_rule_applied else ''}",
           file=sys.stderr)
     return 0

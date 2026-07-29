@@ -93,6 +93,22 @@ periodicity; the spacing jitter hardens it further.
 → refs: DRAM redundancy / repair literature; memory floorplanning texts
 *(TODO Het: exact titles/DOIs)*
 
+**[S13] Standard-cell logic is organised into fixed-height rows separated by row-boundary bands, with diffusion breaks between cells and dummy gates at cell edges; the contacted poly pitch (CPP) is regular by construction.**
+A fin field on its own is a 1-D grating -- fins repeat along one axis and are uniform along the
+other -- so it carries no information at all about position along the fin direction. Real logic is
+not like that: cells are stacked in rows of fixed height, the row boundaries carry power rails and
+n-well edges, the active region is cut by diffusion breaks between cells, and dummy gates sit at
+cell edges. The rows, breaks and dummies vary; the gate pitch does not.
+→ used in: `render_finfet_world()` row boundaries (`ROW_BASE_RANGE`, `ROW_JITTER`,
+`ROW_WIDTH_RANGE_PX`, `ROW_INTENSITY`), diffusion breaks (`DIFF_BREAK_RATE`,
+`DIFF_BREAK_WIDTH_RANGE_PX`), dummy-gate doublets (`DUMMY_GATE_PROB`) -- SPEC_AMENDMENT_v1.5
+→ measured: before v1.5, FinFET trailed DRAM by ~10 points at every noise level, every failure was
+pure-y, and the correlation surface degenerated into horizontal ridges spanning the frame. After
+v1.5 the y-ambiguity flag rate on FinFET fields is 0% and FinFET outperforms DRAM.
+→ refs: standard-cell layout / place-and-route texts; FinFET design-rule literature on diffusion
+breaks and dummy-gate insertion
+*(TODO Het: exact titles/DOIs -- this one needs real references before submission)*
+
 **[S10] Contamination particles are a standard artifact in SEM-based wafer inspection.**
 → used in: `add_defects()` (SPEC_AMENDMENT_v1.1 §A.3); constants `DEFECT_RATE`,
 `DEFECT_SIGMA_RANGE`, `DEFECT_AMPLITUDE_RANGE`, `DEFECT_MIN_CROSSING_DIST`
@@ -145,3 +161,4 @@ fractional offset.
 | S10 | SEM contamination particles | `add_defects` |
 | S11 | Navigation drift centres the target | `_place_by_drift` |
 | S12 | Floorplans are aperiodic at field scale | `_stripe_starts`, bank stripe |
+| S13 | Standard-cell rows, diffusion breaks, dummy gates | `render_finfet_world` |
