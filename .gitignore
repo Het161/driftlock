@@ -4,3 +4,10 @@ __pycache__/
 .venv/
 report/
 *.pyc
+
+# scratch output from running the tools (datasets, debug overlays, --json dumps)
+demo*/
+hard*/
+overlay*.png
+out.json
+result.json
