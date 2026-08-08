@@ -11,3 +11,9 @@ hard*/
 overlay*.png
 out.json
 result.json
+
+# macOS metadata. The AppleDouble "._" sidecars appear for every file when the
+# repo lives on a non-HFS volume (exFAT, e.g. an external SanDisk), so they turn
+# up in bulk rather than one at a time.
+._*
+.DS_Store

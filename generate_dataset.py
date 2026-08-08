@@ -175,6 +175,33 @@ MAT_JITTER_UP_FACTOR = 1.2   # asymmetric: step ~ base * U(1 - j, 1 + 1.2*j)
 # released (4 Aug) -- a one-line change (v1.2 §A.6).
 STRIPE_BASE_RANGE = (500.0, 700.0)     # world px between stripes, both families
 STRIPE_WIDTH_RANGE_PX = (55.0, 125.0)  # per-stripe width, both families
+
+# --- sparse-landmark tier (SPEC_AMENDMENT_v1.6 §D) --------------------------
+# Our default stripe pitch (500-700 world px) is SMALLER than the 1000 px
+# reference crop, so every reference is guaranteed to contain at least one
+# stripe of each family -- the guarantee asserted below.  That guarantee makes
+# the localization problem strictly easier than the official generator's, where
+# the array blocks (2600 nm) are 2.6x the reference field (1000 nm) and a crop
+# can land entirely inside uniform periodic array with no landmark at all.
+#
+# MEASURED on the official generator: crops containing no non-array material
+# scored 18.8% within 5 px against 89.6% for crops with >20% coverage, and they
+# are 16% of its pairs.  That single split accounts for essentially all of the
+# gap between our 94% on our own data and 70% on theirs -- so until this tier
+# exists we cannot measure progress on the case that dominates the error.
+#
+# The range brackets the official period (2600 nm mat + 320 nm strip = 2920 nm).
+#
+# MEASURED, 40 dram/medium pairs at seed 20260808:
+#   landmark-free crops      38%  (official generator: 16%)
+#   acc@5 on those           13.3%  (official generator: 18.8%)  <- the mode reproduces
+#   acc@5 on landmark crops  32.0%  (official generator: 89.6%)  <- ours is harsher
+# The failure mode itself transfers closely; the landmark-bearing half does not,
+# because our landmarks are 1-D stripes that pin one axis, where the official
+# strips are 2-D regions with orthogonal routing lines that pin both. This tier
+# is therefore a deliberate stress case, not a calibrated replica -- it is sized
+# for statistical power on the failing half, which is the half we need to fix.
+SPARSE_STRIPE_BASE_RANGE = (2400.0, 3400.0)
 STRIPE_INTENSITY, STRIPE_INTENSITY_JITTER = 0.35, 0.03
 
 SA_BASE_RANGE = DR_BASE_RANGE = STRIPE_BASE_RANGE
@@ -263,7 +290,28 @@ NOISE_PRESETS: dict[str, dict[str, float]] = {
     "low":    {"N_e_ref": 400.0, "N_e_search": 150.0, "b_ref": 0.010, "b_search": 0.020},
     "medium": {"N_e_ref": 250.0, "N_e_search":  80.0, "b_ref": 0.015, "b_search": 0.030},
     "high":   {"N_e_ref": 150.0, "N_e_search":  40.0, "b_ref": 0.020, "b_search": 0.050},
+    # v1.6 §E: the organiser's starter generator uses the SAME Poisson-Gaussian
+    # form as ours, just in 0-255 units -- its `dose` is exactly our N_e and its
+    # `detector_noise_sigma/255` is exactly our b. Transcribing its defaults
+    # (dose_reference 2000, dose_search 200, sigma 2 and 5 of 255) shows our own
+    # presets run 5-13x noisier on the REFERENCE than the official nominal, and
+    # that our "low" search tier is already noisier than its default. Included so
+    # that claim is reproducible and so we can train against the official
+    # operating point rather than only against harsher ones.
+    "official": {"N_e_ref": 2000.0, "N_e_search": 200.0,
+                 "b_ref": 2.0 / 255.0, "b_search": 5.0 / 255.0},
 }
+
+# --- optional noise kinds the official generator enables in its own evaluation ---
+# CITE: [S2] Multiplicative (signal-proportional) gain variation and impulse
+# (dead/hot pixel) noise are standard detector artifacts distinct from the
+# Poisson-Gaussian pair above.
+# The official baseline_solution/evaluate.py turns speckle on at its "high" tier
+# (0.15) and speckle + salt-pepper at "severe" (0.3 / 0.01), so these are part of
+# the distribution it actually scores against -- not merely demo knobs. Default
+# 0.0 keeps every existing seed bit-identical.
+SPECKLE_SIGMA = 0.0        # multiplicative: out = x * (1 + N(0, sigma))
+SALT_PEPPER_PROB = 0.0     # fraction of pixels forced to 0 or the ceiling
 
 # --- scan-line correlated noise, search image only (PROJECT_SPEC.md §3.4) ---
 # CITE: [S3] Row/line-scan correlated noise is present in SEM acquisitions.
@@ -556,6 +604,7 @@ def apply_superstructure(
     rng: np.random.Generator,
     mat_jitter: float = MAT_JITTER,
     commensurate: bool = False,
+    sparse_landmarks: bool = False,
 ) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Overlay sense-amp and wordline-driver stripes in place (v1.2 §A).
 
@@ -571,10 +620,16 @@ def apply_superstructure(
     laid down first, then vertical driver stripes, which therefore win at
     crossings -- matching a floorplan where the driver column runs through.
 
+    ``sparse_landmarks=True`` (v1.6 §D) widens the stripe pitch past the capture
+    size so a reference crop can contain no superstructure at all, mirroring the
+    official generator's block geometry. The §A.2 guarantee is deliberately not
+    asserted in that mode -- violating it is the entire point of the tier.
+
     Raises:
         RuntimeError: If the realised clear gap of either family exceeds the
             capture size, which would break the v1.2 §A.2 guarantee that every
             reference crop straddles at least one stripe of each family.
+            Not raised when ``sparse_landmarks`` is set.
 
     Returns:
         ``(params, sa_centers, dr_centers, sa_alpha, dr_alpha)``.  The centres
@@ -594,8 +649,10 @@ def apply_superstructure(
         bank_prob = BANK_PROB
         per_stripe_width = True
 
-    sa_base = float(rng.uniform(*SA_BASE_RANGE))
-    dr_base = float(rng.uniform(*DR_BASE_RANGE))
+    base_range = SPARSE_STRIPE_BASE_RANGE if sparse_landmarks else SA_BASE_RANGE
+    sa_base = float(rng.uniform(*base_range))
+    dr_base = float(rng.uniform(*(SPARSE_STRIPE_BASE_RANGE if sparse_landmarks
+                                  else DR_BASE_RANGE)))
     if commensurate:
         sa_base = max(1.0, round(sa_base / (WL_PITCH_F * f))) * (WL_PITCH_F * f)
         dr_base = max(1.0, round(dr_base / (BL_PITCH_F * f))) * (BL_PITCH_F * f)
@@ -627,7 +684,7 @@ def apply_superstructure(
     np.clip(world, 0.0, 1.0, out=world)
 
     sa_gap, dr_gap = _max_clear_gap(sa_alpha), _max_clear_gap(dr_alpha)
-    if max(sa_gap, dr_gap) >= CAPTURE_SIZE:
+    if not sparse_landmarks and max(sa_gap, dr_gap) >= CAPTURE_SIZE:
         raise RuntimeError(
             f"stripe coverage guarantee violated (v1.2 §A.2): largest clear gap "
             f"SA={sa_gap}px DR={dr_gap}px >= capture size {CAPTURE_SIZE}px; a reference "
@@ -638,6 +695,7 @@ def apply_superstructure(
     params = {
         "mat_jitter": mat_jitter,
         "commensurate_mats": bool(commensurate),
+        "sparse_landmarks": bool(sparse_landmarks),
         "sa_base_px": round(sa_base, 2),
         "dr_base_px": round(dr_base, 2),
         "sa_base_over_wl_pitch": round(sa_base / (WL_PITCH_F * f), 4),
@@ -848,14 +906,17 @@ def build_world(
     defects: bool = True,
     mat_jitter: float = MAT_JITTER,
     commensurate: bool = False,
+    sparse_landmarks: bool = False,
 ) -> tuple[np.ndarray, dict[str, Any], dict[str, np.ndarray]]:
     """Build the full clean world: lattice, then superstructure, then particles.
 
-    Three-tier ablation (v1.3 §A):
-      ``pure_lattice=True``  -- no superstructure at all, the degenerate v1.0 world
-      ``commensurate=True``  -- superstructure pitched on exact lattice multiples,
-                                reproducing v1.1's real defect
-      default                -- aperiodic, incommensurate superstructure (v1.2/v1.3)
+    Four-tier ablation (v1.3 §A, extended by v1.6 §D):
+      ``pure_lattice=True``      -- no superstructure at all, the degenerate v1.0 world
+      ``commensurate=True``      -- superstructure pitched on exact lattice multiples,
+                                    reproducing v1.1's real defect
+      ``sparse_landmarks=True``  -- superstructure pitched WIDER than the capture,
+                                    so some crops contain no landmark (official-like)
+      default                    -- aperiodic, incommensurate superstructure (v1.2/v1.3)
 
     ``mat_jitter`` remains available as an independent knob, but it is no longer
     the ablation's middle tier: the isolation ablation showed spacing jitter was
@@ -885,7 +946,8 @@ def build_world(
         return world, params, {}
 
     super_params, sa_centers, dr_centers, sa_alpha, dr_alpha = apply_superstructure(
-        world, params["F"], rng_super, mat_jitter, commensurate
+        world, params["F"], rng_super, mat_jitter, commensurate,
+        sparse_landmarks=sparse_landmarks,
     )
     params.update(super_params)
 
@@ -918,6 +980,8 @@ def apply_sensor_noise(
     read_noise: float,
     rng: np.random.Generator,
     scanline: bool = False,
+    speckle_sigma: float = SPECKLE_SIGMA,
+    salt_pepper_prob: float = SALT_PEPPER_PROB,
 ) -> np.ndarray:
     """Mixed Poisson-Gaussian sensor noise (PROJECT_SPEC.md §3.4).
 
@@ -950,6 +1014,14 @@ def apply_sensor_noise(
         ) * SCANLINE_AMPLITUDE
         noisy = noisy + rows[:, None].astype(np.float32)
 
+    # v1.6 §E, both no-ops at their 0.0 defaults so existing seeds are unchanged.
+    if speckle_sigma > 0:
+        noisy = noisy * (1.0 + rng.normal(0.0, speckle_sigma, clean.shape).astype(np.float32))
+    if salt_pepper_prob > 0:
+        hit = rng.random(clean.shape) < salt_pepper_prob
+        noisy = np.where(hit & (rng.random(clean.shape) < 0.5), PIXEL_CEILING,
+                         np.where(hit, 0.0, noisy)).astype(np.float32)
+
     return np.clip(noisy, 0.0, PIXEL_CEILING).astype(np.float32)
 
 
@@ -962,6 +1034,8 @@ def sem_capture(
     read_noise: float,
     rng: np.random.Generator,
     scanline: bool = False,
+    speckle_sigma: float = SPECKLE_SIGMA,
+    salt_pepper_prob: float = SALT_PEPPER_PROB,
 ) -> np.ndarray:
     """Full capture chain for one image: emission -> optics PSF -> detector.
 
@@ -972,7 +1046,9 @@ def sem_capture(
     """
     img = apply_edge_brightening(clean, edge_gain)
     img = gaussian_blur(img, blur_sigma)
-    return apply_sensor_noise(img, n_e, read_noise, rng, scanline=scanline)
+    return apply_sensor_noise(img, n_e, read_noise, rng, scanline=scanline,
+                              speckle_sigma=speckle_sigma,
+                              salt_pepper_prob=salt_pepper_prob)
 
 
 # --------------------------------------------------------------------------- #
@@ -1008,6 +1084,7 @@ def _place_by_drift(
     rng: np.random.Generator,
     drift_sigma: float,
     drift_cap: float,
+    uniform: bool = False,
 ) -> tuple[int, int, float, float, int]:
     """Sample the true site by drift prior, then back-solve the crop centre.
 
@@ -1034,10 +1111,16 @@ def _place_by_drift(
     lo_g, hi_g = GT_FRAME_MARGIN, CAPTURE_SIZE - GT_FRAME_MARGIN
 
     for attempt in range(1, MAX_PLACEMENT_RESAMPLES + 1):
-        angle = float(rng.uniform(0.0, 2.0 * np.pi))
-        magnitude = min(abs(float(rng.normal(0.0, drift_sigma))), drift_cap)
-        gx = CAPTURE_SIZE / 2.0 + magnitude * np.cos(angle)
-        gy = CAPTURE_SIZE / 2.0 + magnitude * np.sin(angle)
+        if uniform:
+            # v1.6 §F control: no drift prior at all, the target lands anywhere
+            # in the legal frame -- which is what the official generator does.
+            gx = float(rng.uniform(lo_g, hi_g))
+            gy = float(rng.uniform(lo_g, hi_g))
+        else:
+            angle = float(rng.uniform(0.0, 2.0 * np.pi))
+            magnitude = min(abs(float(rng.normal(0.0, drift_sigma))), drift_cap)
+            gx = CAPTURE_SIZE / 2.0 + magnitude * np.cos(angle)
+            gy = CAPTURE_SIZE / 2.0 + magnitude * np.sin(angle)
 
         wx, wy = apply_affine(inverse, [(gx * DOWNSAMPLE, gy * DOWNSAMPLE)])[0]
         cx, cy = int(round(float(wx))), int(round(float(wy)))
@@ -1065,6 +1148,10 @@ def generate_pair(
     drift_cap: float = DRIFT_CAP,
     mat_jitter: float = MAT_JITTER,
     commensurate: bool = False,
+    sparse_landmarks: bool = False,
+    uniform_placement: bool = False,
+    speckle_sigma: float = SPECKLE_SIGMA,
+    salt_pepper_prob: float = SALT_PEPPER_PROB,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     """Generate one reference/search pair plus its ground-truth record.
 
@@ -1080,6 +1167,18 @@ def generate_pair(
         mat_jitter: Mat-spacing irregularity; 0 = strictly regular (v1.2 §A.1).
         commensurate: Quantize stripe pitches onto lattice multiples, the v1.1
             defect reproduced for ablation (v1.3 §A). Not a realistic mode.
+        sparse_landmarks: Widen the stripe pitch past the capture size so some
+            reference crops contain no superstructure, matching the official
+            generator's block geometry (v1.6 §D).
+        uniform_placement: Place the target uniformly across the search frame
+            instead of near the centre via the drift prior (v1.6 §F). The
+            official generator samples crop origins uniformly, so this is the
+            control that shows how much our results lean on the drift prior.
+            Note this changes only where the TARGET IS PLACED; the official
+            closest-to-centre TIE-BREAK is a problem-statement requirement and
+            stays in localize.py either way.
+        speckle_sigma: Multiplicative noise sigma on the search capture (v1.6 §E).
+        salt_pepper_prob: Impulse-noise pixel fraction on the search capture.
 
     Returns:
         ``(reference, search, record)``; both images are float32 in
@@ -1099,13 +1198,13 @@ def generate_pair(
 
     # --- drift-prior placement, back-solved through A^-1 (v1.1 §B) ---
     cx, cy, true_x, true_y, attempts = _place_by_drift(
-        matrix, rng_geometry, drift_sigma, drift_cap
+        matrix, rng_geometry, drift_sigma, drift_cap, uniform=uniform_placement
     )
 
     world, structure_params, profiles = build_world(
         style, rng_structure, rng_super, rng_defects,
         pure_lattice=pure_lattice, defects=defects, mat_jitter=mat_jitter,
-        commensurate=commensurate,
+        commensurate=commensurate, sparse_landmarks=sparse_landmarks,
     )
 
     x0, y0 = cx - CAPTURE_SIZE // 2, cy - CAPTURE_SIZE // 2
@@ -1117,7 +1216,9 @@ def generate_pair(
         sa_a = profiles["sa_alpha"][y0:y0 + CAPTURE_SIZE]
         dr_a = profiles["dr_alpha"][x0:x0 + CAPTURE_SIZE]
         sa_cov, dr_cov = float(sa_a.mean()), float(dr_a.mean())
-        if sa_cov <= 0.0 or dr_cov <= 0.0:
+        # v1.6 §D: the sparse tier exists precisely to produce landmark-free
+        # crops, so the §A.2 guarantee is recorded there rather than enforced.
+        if not sparse_landmarks and (sa_cov <= 0.0 or dr_cov <= 0.0):
             raise RuntimeError(
                 f"pair {index}: reference crop at ({cx}, {cy}) contains no "
                 f"{'sense-amp' if sa_cov <= 0 else 'driver'} stripe (SA {sa_cov:.4f}, "
@@ -1154,6 +1255,7 @@ def generate_pair(
     search = sem_capture(
         search_clean, edge_gain=EDGE_GAIN_SEARCH, blur_sigma=blur_sigma_search,
         n_e=preset["N_e_search"], read_noise=preset["b_search"], rng=rng_search, scanline=True,
+        speckle_sigma=speckle_sigma, salt_pepper_prob=salt_pepper_prob,
     )
 
     placed = structure_params.pop("_defects", [])
@@ -1176,6 +1278,9 @@ def generate_pair(
                                          true_y - CAPTURE_SIZE / 2.0)), 3),
         "drift_sigma": drift_sigma,
         "drift_cap": drift_cap,
+        "uniform_placement": bool(uniform_placement),
+        "speckle_sigma": speckle_sigma,
+        "salt_pepper_prob": salt_pepper_prob,
         "crop_center_x": cx,
         "crop_center_y": cy,
         "placement_attempts": attempts,
@@ -1354,6 +1459,10 @@ def build_parser() -> argparse.ArgumentParser:
     ablation.add_argument("--pure-lattice", action="store_true",
                           help="disable superstructure and particles, reproducing the "
                                "degenerate uniform world (the hard/ambiguous control case)")
+    ablation.add_argument("--sparse-landmarks", action="store_true",
+                          help="widen stripe pitch past the capture size so some reference "
+                               "crops contain no landmark, as in the official generator "
+                               "(v1.6 §D); relaxes the v1.2 §A.2 coverage guarantee")
     ablation.add_argument("--commensurate-mats", action="store_true",
                           help="reproduces the v1.1 commensurate-superstructure defect for "
                                "ablation; not a realistic mode")
@@ -1363,6 +1472,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="sigma of the navigation drift magnitude, in search px")
     parser.add_argument("--drift-cap", type=_positive_float, default=DRIFT_CAP,
                         help="hard cap on the navigation drift magnitude, in search px")
+    parser.add_argument("--uniform-placement", action="store_true",
+                        help="place the target uniformly in the frame instead of via the "
+                             "drift prior (v1.6 §F); the official generator does this")
+    parser.add_argument("--speckle-sigma", type=_nonneg_float, default=SPECKLE_SIGMA,
+                        help="multiplicative noise sigma on the search capture (v1.6 §E)")
+    parser.add_argument("--salt-pepper-prob", type=_nonneg_float, default=SALT_PEPPER_PROB,
+                        help="impulse-noise pixel fraction on the search capture (v1.6 §E)")
     parser.add_argument("--mat-jitter", type=_nonneg_float, default=MAT_JITTER,
                         help="mat-spacing irregularity; 0 = strictly regular mats "
                              "(the v1.1 model, kept as the middle ablation tier)")
@@ -1377,6 +1493,9 @@ def _iter_pairs(args: argparse.Namespace) -> Iterator[tuple[int, np.ndarray, np.
             pure_lattice=args.pure_lattice, defects=args.defects,
             drift_sigma=args.drift_sigma, drift_cap=args.drift_cap,
             mat_jitter=args.mat_jitter, commensurate=args.commensurate_mats,
+            sparse_landmarks=args.sparse_landmarks,
+            uniform_placement=args.uniform_placement,
+            speckle_sigma=args.speckle_sigma, salt_pepper_prob=args.salt_pepper_prob,
         )
         yield index, reference, search, record, time.perf_counter() - started
 

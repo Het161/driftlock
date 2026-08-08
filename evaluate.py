@@ -55,9 +55,14 @@ SECONDARY_TOLERANCE_PX = 10.0
 ERROR_FLOOR_PX = 0.01
 
 CSV_COLUMNS = [
-    "id", "style", "noise_level", "pure_lattice",
+    # `seed` and `sparse_landmarks` are first-class columns (v1.6): the previous
+    # results.csv recorded neither, so the committed numbers could not be tied
+    # back to a command -- and in fact did not reproduce from the seed the README
+    # documents. A results file that cannot name its own inputs is not evidence.
+    "id", "style", "noise_level", "pure_lattice", "sparse_landmarks", "seed",
     "pred_x", "pred_y", "true_x", "true_y", "error_px",
-    "runtime_ms", "confidence", "psr", "ambiguous", "ambig_x", "ambig_y", "n_candidates",
+    "runtime_ms", "confidence", "psr", "peak_margin",
+    "ambiguous", "ambig_x", "ambig_y", "n_candidates",
     "centre_rule_applied", "theta_deg", "scale", "drift_px", "source",
 ]
 
@@ -70,6 +75,8 @@ class PairResult:
     style: str
     noise_level: str
     pure_lattice: bool
+    sparse_landmarks: bool
+    seed: int
     pred_x: float
     pred_y: float
     true_x: float
@@ -78,6 +85,7 @@ class PairResult:
     runtime_ms: float
     confidence: float
     psr: float
+    peak_margin: float
     ambiguous: bool
     ambig_x: bool
     ambig_y: bool
@@ -104,6 +112,9 @@ def _record_common(record: dict[str, Any], meta: dict[str, Any]) -> dict[str, An
         "style": record.get("style", meta.get("style", "?")),
         "noise_level": record.get("noise_level", meta.get("noise_level", "?")),
         "pure_lattice": bool(record.get("pure_lattice", meta.get("pure_lattice", False))),
+        "sparse_landmarks": bool(record.get("sparse_landmarks",
+                                            meta.get("sparse_landmarks", False))),
+        "seed": int(meta.get("seed", record.get("seed", -1))),
         "theta_deg": float(record.get("theta_deg", float("nan"))),
         "scale": float(record.get("scale", float("nan"))),
         "drift_px": float(record.get("drift_px", float("nan"))),
@@ -150,6 +161,7 @@ def evaluate_dir(
             pred_x, pred_y = result.x, result.y
             extra = {
                 "confidence": result.confidence, "psr": result.psr,
+                "peak_margin": result.peak_margin,
                 "ambiguous": result.ambiguous, "n_candidates": result.n_candidates,
                 "ambig_x": result.ambig_x, "ambig_y": result.ambig_y,
                 "centre_rule_applied": result.centre_rule_applied,
@@ -163,6 +175,7 @@ def evaluate_dir(
             runtime_ms=float(elapsed),
             confidence=float(extra["confidence"]),
             psr=float(extra["psr"]),
+            peak_margin=float(extra.get("peak_margin", float("nan"))),
             ambiguous=bool(extra["ambiguous"]),
             ambig_x=bool(extra.get("ambig_x", False)),
             ambig_y=bool(extra.get("ambig_y", False)),
