@@ -89,6 +89,16 @@ MIN_TEMPLATE_PX = 8
 SCALE_SWEEP = (9.6, 10.4, 7)          # (lo, hi, steps) -- reference is resized by 1/s
 ROTATION_SWEEP_DEG = (-2.0, 2.0, 5)   # (lo, hi, steps) -- the template is rotated
 
+#: How many scales survive stage A of the adaptive sweep to be re-tried under
+#: rotation in stage B (v1.6 §A).  Cost is 7 + 4*K matches against the full
+#: bank's 35, so K=3 runs at 19/35 = 54% of the exhaustive cost.
+#:
+#: K=1 (strict separability) is NOT safe: a -2 deg rotation depresses the true
+#: scale's stage-A score enough that stage A picks a neighbouring scale, and
+#: stage B is then locked to it -- reproduced on our dram/medium seed 42 pair 1,
+#: where K=1 returned 263 px against the full bank's 0.08 px. K=3 restores it.
+ADAPTIVE_TOP_K = 3
+
 #: Fraction trimmed from each template edge after rotation, to keep the
 #: undefined corners of a rotated square out of the correlation.
 #:
@@ -134,6 +144,27 @@ PSR_WINDOW = 11
 # say "this particular answer is wrong".
 AMBIGUITY_PSR_MIN = 2.5
 AMBIGUITY_CANDIDATES_MAX = 20
+
+#: Third gate arm, on :func:`_peak_margin` (v1.6 §B).  ADDED to the two arms
+#: above rather than replacing them: PSR separates our own populations cleanly
+#: and must keep doing so, but it does not transfer to a foreign generator.
+#:
+#: Calibrated on three populations (60 our-standard @ seed 20260810, 20 our
+#: pure-lattice, 40 official-default), margin percentiles:
+#:      our standard      min 0.066   p10 0.536   median 1.000
+#:      our pure-lattice  min 0.006   p10 0.020   median 0.099   max 0.252
+#:      official default  min 0.109   p10 0.245   median 1.000
+#: Unlike PSR the two of our own populations OVERLAP on this axis (0.066 vs
+#: 0.252), which is why this arm supplements PSR instead of replacing it.
+#: At 0.30 the arm fires on 100% of pure-lattice, 6.7% of our standard fields,
+#: and 15% of official pairs -- where it catches 33% of the >5px misses that
+#: the PSR arm alone caught 0% of, because no official pair ever drops below
+#: AMBIGUITY_PSR_MIN at all.
+#:
+#: Note 0.30 sits inside the informative band rather than in an empty one: see
+#: the saturation limit in _peak_margin(). Values above ~0.95 cannot separate
+#: anything, so raising this threshold buys nothing above that point.
+AMBIGUITY_MARGIN_MIN = 0.30
 
 #: Axis-resolved ambiguity (Phase 4.5).  Degeneracy is often confined to ONE
 #: axis: a FinFET fin field is a 1-D grating, so rival peaks stack up in a
@@ -181,6 +212,22 @@ CENTRE_RULE_ONLY_WHEN_AMBIGUOUS = True
 # peak, so the correction is clamped.
 SUBPIXEL_MAX_OFFSET = 1.0
 
+# --- v1.6 §C: stdout conventions --------------------------------------------
+#: PROJECT_SPEC.md §4 fixes stdout as ``"x y"`` with rounded ints, but that was
+#: our own reading -- the spec itself flags the exact invocation as unknown and
+#: tells us to accept paths positionally as a defence. The organiser's starter
+#: package (baseline_solution/infer.py) instead prints ``"746.00,326.00"`` and
+#: its docstring claims to mirror "the exact submission interface Applied
+#: Materials requires". Both readings are now available; 'spec' stays the
+#: default because rounding was MEASURED to be free -- over 160 official pairs
+#: it flipped zero results at either the 5 px or 10 px tolerance (worst single
+#: -pair penalty 0.58 px), so emitting floats buys no accuracy and would break a
+#: grader that parses with int().
+STDOUT_FORMATS = {
+    "spec": lambda r: f"{r.x_int} {r.y_int}",
+    "official": lambda r: f"{r.x:.2f},{r.y:.2f}",
+}
+
 
 @dataclass
 class LocalizationResult:
@@ -200,6 +247,7 @@ class LocalizationResult:
     scale: float | None = None          # best scale from the sweep
     theta_deg: float | None = None      # best rotation from the sweep
     peak_gap: float | None = None       # winner minus best separated rival
+    peak_margin: float = 1.0            # scale-free rival closeness (§5.2, v1.6 §B)
     n_candidates: int = 1               # rivals within CANDIDATE_SCORE_TOL
     centre_rule_applied: bool = False   # official tie-break actually fired
     subpixel_dx: float = 0.0
@@ -248,6 +296,37 @@ def _template_bank(
     return bank
 
 
+def _best_over(
+    ref_n: np.ndarray,
+    search_n: np.ndarray,
+    scales: np.ndarray,
+    rotations: np.ndarray,
+    per_scale: dict[float, float] | None = None,
+) -> tuple[float, float, tuple[int, int], np.ndarray, float] | None:
+    """Correlate every (scale, rotation) template and keep the highest-scoring.
+
+    Streams the correlation maps rather than accumulating them, so peak memory
+    stays at two maps regardless of how large the sweep is.  When ``per_scale``
+    is supplied it is filled with the best score seen at each scale, which is
+    what the adaptive path uses to rank scales without a second pass.
+
+    Returns ``(scale, theta, template_shape, corr_map, score)``, or ``None`` if
+    no template in the requested set fitted inside the search image.
+    """
+    best_score, best = -np.inf, None
+    for scale, theta, template in _template_bank(ref_n, scales, rotations, ROTATION_CROP_FRAC):
+        if template.shape[0] > search_n.shape[0] or template.shape[1] > search_n.shape[1]:
+            continue
+        corr = cv2.matchTemplate(search_n, template, MATCH_METHOD)
+        score = float(corr.max())
+        if per_scale is not None and score > per_scale.get(scale, -np.inf):
+            per_scale[scale] = score
+        if score > best_score:
+            best_score = score
+            best = (scale, theta, template.shape, corr, score)
+    return best
+
+
 def _candidate_peaks(corr: np.ndarray, tol: float, min_sep: int
                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Local maxima scoring within ``tol`` of the best, sorted best-first (§5.2).
@@ -280,6 +359,43 @@ def _peak_gap(corr: np.ndarray, px: int, py: int, min_sep: int) -> float:
     if not np.isfinite(rival):
         return float("inf")     # nothing else in the frame: unambiguous
     return float(corr[py, px]) - rival
+
+
+def _peak_margin(corr: np.ndarray, scores: np.ndarray) -> float:
+    """How tightly the near-tie candidates are packed against the winner.
+
+    ``(peak - best_rival) / (peak - median(candidates))`` over the candidate set
+    from :func:`_candidate_peaks` -- i.e. only the local maxima already within
+    ``CANDIDATE_SCORE_TOL`` of the peak, not every local maximum on the map.
+
+    This exists because PSR does not transfer between datasets (v1.6 §B). PSR
+    divides by the standard deviation of all non-peak pixels, so its absolute
+    value is set by how much of the correlation map is flat background -- a
+    property of the imaged structure, not of match quality. Measured: our own
+    fields give PSR 2.1-6.5 while the official generator's give 4.5-16.0 on the
+    same algorithm, so a threshold tuned on one is meaningless on the other.
+    This ratio has no such dependence: it is invariant to any affine rescale of
+    the correlation surface.
+
+    HONEST LIMIT -- what this actually measures. Because the candidate set is
+    pre-filtered to near-ties, the ratio SATURATES at 1.0 whenever there are
+    fewer than about five of them, and it is exactly 1.0 by construction for one
+    or two. Measured over the 210-pair report: 100% saturated at n<=2 (143
+    pairs), 90.9% at n=3-4, then 0% at n>=5 where it spreads over 0.13-0.95, and
+    0.00-0.36 at n>20. So it is not an independent axis -- it is a finer-grained
+    reading of `n_candidates`, resolving the 5-20 band that the
+    AMBIGUITY_CANDIDATES_MAX arm steps straight over. That is precisely the band
+    it was added for; it is not a general "is this peak trustworthy" score, and
+    it cannot rank the 78% of pairs that saturate.
+    """
+    if scores.size < 2:
+        return 1.0
+    peak = float(scores[0])
+    rival = float(scores[1])
+    spread = peak - float(np.median(scores))
+    if spread <= 1e-9:
+        return 0.0          # every candidate is tied: fully degenerate
+    return float(np.clip((peak - rival) / spread, 0.0, 1.0))
 
 
 def _psr(corr: np.ndarray, px: int, py: int, window: int = PSR_WINDOW) -> float:
@@ -321,6 +437,7 @@ def localize(
     denoise_sigma: float = SEARCH_DENOISE_SIGMA,
     fast: bool = False,
     sweep: bool = True,
+    adaptive: bool = True,
     return_corr: bool = False,
 ) -> LocalizationResult | tuple[LocalizationResult, np.ndarray]:
     """Locate ``reference`` inside ``search`` and return its centre.
@@ -334,9 +451,12 @@ def localize(
         downsample: Magnification ratio between the two captures.
         denoise_sigma: Gaussian sigma applied to the search image only.
         fast: Skip the rotation sweep (scales only) -- the ``--fast`` benchmark
-            path from §5.5.
+            path from §5.5. Takes precedence over ``adaptive``.
         sweep: Run the Phase 3 sweep at all. ``False`` reproduces the Phase 2
             single-scale baseline, which is what the ablation gate measures.
+        adaptive: Use the separable two-stage sweep (v1.6 §A) instead of the
+            full scale x rotation cross product. Default; ``False`` restores
+            the Phase 3 exhaustive bank.
         return_corr: Also return the correlation map (for ``--debug``).
 
     Returns:
@@ -383,26 +503,40 @@ def localize(
             f"swapped, or the magnification ratio is not {downsample}x"
         )
     # 4. sweep scale x rotation, keeping the best correlation surface (§5.1)
-    if sweep:
-        scales = np.linspace(*SCALE_SWEEP)
-        rotations = (np.array([0.0]) if fast else np.linspace(*ROTATION_SWEEP_DEG))
-        method = "sweep-scale-only" if fast else "sweep-scale-rotation"
-    else:
-        scales = np.array([float(downsample)])
-        rotations = np.array([0.0])
+    if not sweep:
+        best = _best_over(ref_n, search_n, np.array([float(downsample)]), np.array([0.0]))
         method = "baseline-ncc-single-scale"
+    elif fast:
+        best = _best_over(ref_n, search_n, np.linspace(*SCALE_SWEEP), np.array([0.0]))
+        method = "sweep-scale-only"
+    elif adaptive:
+        # Coarse-to-fine sweep (v1.6 §A).  The full scale x rotation bank costs
+        # 35 matches, and MEASURED on both generators it buys nothing on average
+        # over scale-only -- while its extra degrees of freedom hand it spurious
+        # winners (it picked theta != 0 on 14% of official pairs, where the true
+        # rotation is exactly 0, and scored 4% there against 65% otherwise).
+        #
+        # Stage A ranks scales at zero rotation.  Stage B then sweeps rotation,
+        # but over the top ADAPTIVE_TOP_K scales rather than only the single
+        # best -- committing to one scale is unsafe because a large uncorrected
+        # rotation depresses the true scale's score in stage A, which loses
+        # exactly the pairs the rotation sweep exists to win.
+        per_scale: dict[float, float] = {}
+        stage_a = _best_over(ref_n, search_n, np.linspace(*SCALE_SWEEP),
+                             np.array([0.0]), per_scale=per_scale)
+        top = sorted(per_scale, key=per_scale.get, reverse=True)[:ADAPTIVE_TOP_K]
+        others = np.array([t for t in np.linspace(*ROTATION_SWEEP_DEG) if abs(t) > 1e-9])
+        stage_b = _best_over(ref_n, search_n, np.array(top), others)
+        best = stage_b if (stage_b and stage_a and stage_b[4] > stage_a[4]) else stage_a
+        method = "sweep-coarse-to-fine"
+    else:
+        best = _best_over(ref_n, search_n, np.linspace(*SCALE_SWEEP),
+                          np.linspace(*ROTATION_SWEEP_DEG))
+        method = "sweep-scale-rotation"
 
-    best_score, best = -np.inf, None
-    for scale, theta, template in _template_bank(ref_n, scales, rotations, ROTATION_CROP_FRAC):
-        if template.shape[0] > search_n.shape[0] or template.shape[1] > search_n.shape[1]:
-            continue
-        corr = cv2.matchTemplate(search_n, template, MATCH_METHOD)
-        score = float(corr.max())
-        if score > best_score:
-            best_score, best = score, (scale, theta, template.shape, corr)
     if best is None:
         raise ValueError("no template in the sweep fitted inside the search image")
-    scale, theta, (tpl_h, tpl_w), corr = best
+    scale, theta, (tpl_h, tpl_w), corr, _ = best
 
     # 5. candidate peaks, then the ambiguity gate (§5.2)
     min_sep = max(1, int(round(min(tpl_h, tpl_w) * CANDIDATE_MIN_SEP_FRAC)))
@@ -411,6 +545,7 @@ def localize(
 
     psr = _psr(corr, px, py)
     gap = _peak_gap(corr, px, py, min_sep)   # diagnostic only; does not separate
+    margin = _peak_margin(corr, scores)      # reported confidence (v1.6 §B)
 
     # Axis-resolved: how far do the rival candidates actually disagree, per axis?
     cx_c = xs + tpl_w / 2.0
@@ -421,10 +556,18 @@ def localize(
     spread_y = float(cy_c.max() - cy_c.min()) if xs.size > 1 else 0.0
     # A globally degenerate field (very low PSR, or a swarm of rivals) is
     # ambiguous on both axes regardless of how the candidates happen to line up.
+    #
+    # These two arms, and only these two, decide whether the centre rule fires.
+    # The margin arm is deliberately NOT here: MEASURED across both generators,
+    # letting it move the answer cost 2 pairs of 220 (-0.9pp) because it fires
+    # the centre rule on near-ties the rule then gets wrong. Its value is as a
+    # confidence report, which is what §5.4 asks of it, so it feeds `ambiguous`
+    # (what we report) without feeding `ambig_x`/`ambig_y` (what we act on).
     degenerate = bool(psr < AMBIGUITY_PSR_MIN or xs.size > AMBIGUITY_CANDIDATES_MAX)
     ambig_x = bool(degenerate or spread_x > tol_x)
     ambig_y = bool(degenerate or spread_y > tol_y)
-    ambiguous = bool(ambig_x or ambig_y)
+    low_margin = bool(margin < AMBIGUITY_MARGIN_MIN)
+    ambiguous = bool(ambig_x or ambig_y or low_margin)
 
     # 6. the official tie-break, applied PER DEGENERATE AXIS only.  Scoring
     #    candidates by distance to the frame centre along the ambiguous axes
@@ -432,7 +575,8 @@ def localize(
     #    FinFET ridge case knows x to a fraction of a pixel and only needs help
     #    with y.  Firing it on every loose tie measured net-negative in Phase 2.
     centre_applied = False
-    if (ambiguous or not CENTRE_RULE_ONLY_WHEN_AMBIGUOUS) and xs.size > 1:
+    act = ambig_x or ambig_y          # NOT `ambiguous`: see the margin note above
+    if (act or not CENTRE_RULE_ONLY_WHEN_AMBIGUOUS) and xs.size > 1:
         centre = (search_n.shape[1] / 2.0, search_n.shape[0] / 2.0)
         cost = np.zeros(xs.size, dtype=np.float64)
         if ambig_x:
@@ -465,6 +609,7 @@ def localize(
         scale=float(scale),
         theta_deg=float(theta),
         peak_gap=float(gap) if np.isfinite(gap) else None,
+        peak_margin=float(margin),
         n_candidates=int(xs.size),
         centre_rule_applied=centre_applied,
         subpixel_dx=float(dx),
@@ -567,6 +712,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="magnification ratio between reference and search")
     parser.add_argument("--fast", action="store_true",
                         help="skip the rotation sweep (scales only), for speed benchmarking")
+    parser.add_argument("--exhaustive", action="store_true",
+                        help="full scale x rotation bank instead of the adaptive sweep")
+    parser.add_argument("--format", choices=sorted(STDOUT_FORMATS), default="spec",
+                        dest="out_format",
+                        help="stdout convention: 'spec' is PROJECT_SPEC.md §4 ('x y', "
+                             "rounded ints); 'official' matches the organiser's "
+                             "baseline_solution/infer.py ('x.xx,y.yy')")
     return parser
 
 
@@ -610,12 +762,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result, corr = localize(reference, search, downsample=args.downsample,
-                                fast=args.fast, return_corr=True)
+                                fast=args.fast, adaptive=not args.exhaustive,
+                                return_corr=True)
     except ValueError as exc:
         raise SystemExit(f"error: {exc}")
 
     # THE CONTRACT: exactly one line, nothing else, ever.
-    print(f"{result.x_int} {result.y_int}")
+    print(STDOUT_FORMATS[args.out_format](result))
 
     if args.json:
         ensure_dir(args.json.parent)

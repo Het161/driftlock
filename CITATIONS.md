@@ -97,6 +97,23 @@ doublets; the gate pitch (CPP) itself stays regular, as in real logic.
 2. Clark L.T., Vashishtha V., Harris D.M., Dietrich S., Wang Z., "Design flows and collateral for the ASAP7 7nm FinFET predictive process design kit," *IEEE Int. Conf. on Microelectronic Systems Education (MSE)*, 2017, pp. 1–4. DOI [10.1109/MSE.2017.7945071](https://doi.org/10.1109/MSE.2017.7945071) · [PDF](https://pages.hmc.edu/harris/research/asap7.pdf) — dummy cells complete the gate grid; tap cells on a 2-CPP pitch.
 3. Arm, "Standard Cell Design and Optimization Methodology," ICCAD 2017 tutorial *(unverified)* — ASAP7 geometry: 54 nm gate pitch, 27 nm fin pitch.
 
+## [S14] Official starter package (organiser-shared) — parameter values and evaluation contract
+Used in: v1.6 alignment. This is a **provenance** entry, not a physics source: it records
+what we took from the organisers' own release so nothing here reads as independently derived.
+
+1. Raina A. (organiser-shared), "Drift-Sense Synthetic Dataset Generator," Hugging Face Space `aayushraina21/drift-sense-synthetic-data`, retrieved 2026-08-08. [Space](https://huggingface.co/spaces/aayushraina21/drift-sense-synthetic-data) — contains `generate_dataset.py` + `src/`, `baseline_solution/`, `tests/`, and a 30-slide methodology deck.
+
+Taken from it, each tied to where it lands:
+- **v1.6 §E** — `dose_reference 2000`, `dose_search 200`, `detector_noise_sigma 2`/`5` (of 255), and the speckle/salt-pepper values its own `baseline_solution/evaluate.py` enables at the `high` and `severe` tiers. Their `dose` maps exactly onto our `N_e`, and `sigma/255` onto our `b`, because both projects independently use the same mixed Poisson–Gaussian model ([S1], [S2]).
+- **v1.6 §D** — the block geometry `mat_size_nm 2600` + `strip_width_nm 320` (period 2920 nm) that `SPARSE_STRIPE_BASE_RANGE` brackets.
+- **v1.6 §C** — the `"%.2f,%.2f"` stdout convention offered by `--format official`, from `baseline_solution/infer.py`.
+- **v1.6 §0** — the evaluation contract: 5 px default tolerance, ground truth as a float box centre, and average precision ranked by matcher confidence, from `baseline_solution/evaluate.py`.
+
+**Not taken:** no algorithm or technique. Our `ablation_gate.baseline_localize` (Phase 2) and
+`localize.py` (Phase 3) both predate this release and independently arrived at ZNCC with a
+multi-scale sweep — see [S6], [S7], [S8] for the sources those were built from. Their
+baseline's rotation-free, no-refinement design is in fact the opposite of ours.
+
 ---
 
 ## Verification log

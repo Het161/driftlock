@@ -85,6 +85,10 @@ flowchart LR
 
 Reproduce it: `python ablation_gate.py --n-pairs 24`
 
+What this gate could *not* catch is in the Results section below: every world it tests
+guarantees a landmark in the reference, so it measures commensurability while being blind
+to landmark availability. `--sparse-landmarks` (v1.6) is the tier that fixes that.
+
 <details>
 <summary><b>Why did regular mats fail?</b></summary>
 
@@ -105,7 +109,7 @@ CUDA to match, nothing to break. It also answers in under a second.
 
 | File | Job |
 |---|---|
-| `generate_dataset.py` | make pairs + ground truth (`--style dram/finfet`, `--pure-lattice`, `--commensurate-mats`, `--seed`) |
+| `generate_dataset.py` | make pairs + ground truth (`--style dram/finfet`, `--pure-lattice`, `--commensurate-mats`, `--sparse-landmarks`, `--uniform-placement`, `--noise-level official`, `--seed`) |
 | `localize.py` | **scored script** — two image paths in, `x y` out |
 | `evaluate.py` | accuracy @5/@10 px, runtime, success + honest-failure figures |
 | `ablation_gate.py` | the three-tier data ablation, exit 0 = pass |
@@ -118,12 +122,49 @@ CUDA to match, nothing to break. It also answers in under a second.
 
 ## Results
 
-About **91%** of predictions land within 5 px on mixed DRAM + FinFET pairs at medium noise
-(94% across all 180 standard pairs · median error **0.08 px** · ~**660 ms** per pair on a
-laptop CPU). On deliberately degenerate pure-lattice fields the system degrades gracefully
-to the drift prior (median error 73 px ≈ the prior's median) and flags **both axes 100% of
-the time**. It identifies degenerate fields; it does not claim to know when an individual
-answer is wrong.
+**90%** of predictions land within 5 px on mixed DRAM + FinFET pairs at medium noise
+(**87.8% ± 4.8%** across all 180 standard pairs · median error **0.08 px** · ~**376 ms** per
+pair on a laptop CPU). On deliberately degenerate pure-lattice fields the system degrades to
+the drift prior and flags **both axes 100% of the time**. It identifies degenerate fields; it
+does not claim to know when an individual answer is wrong.
+
+Reproduce exactly — `docs/results/results.csv` now records `seed` per row, so every number
+here is traceable to its command:
+
+```bash
+for s in dram finfet; do for n in low medium high; do
+  python generate_dataset.py --style $s --noise-level $n --num-pairs 30 --seed 42 \
+    --output-dir data/${s}_${n}; done; done
+python generate_dataset.py --style dram --noise-level medium --num-pairs 30 --seed 42 \
+  --pure-lattice --output-dir data/pure
+python evaluate.py --data-dir data/*_* data/pure --report-dir docs/results
+```
+
+### Tested against the organisers' own generator
+
+When the official starter package was released we ran our unmodified pipeline against it
+(220 pairs, both generators, `docs/SPEC_AMENDMENT_v1.6.md`). The honest result:
+
+| | our generator | **their generator** |
+|---|---|---|
+| accuracy @5 px | 94% | **70%** |
+| median error | 0.08 px | 1.50 px |
+
+We traced the whole gap to one thing, and it was our data, not our algorithm. Our stripe
+pitch (500–700 px) is *smaller* than the 1000 px reference crop, so every reference we
+generate is **guaranteed** to contain a landmark. Theirs is not. Split their pairs by
+whether the reference contains any non-array material:
+
+| reference contains | share | acc@5 px |
+|---|---|---|
+| a landmark (>20% strip) | 67% | **89.6%** |
+| pure periodic array | 16% | **18.8%** |
+
+So we had been solving a strictly easier problem, and our own ablation gate could not see
+it because its worlds carry the same guarantee. `--sparse-landmarks` (v1.6 §D) removes the
+guarantee so the failing case is finally measurable. Against the organisers' ZNCC baseline
+on their own data we are within noise (70.0% vs 72.5%, n=80, p=0.69) — the remaining margin
+is periodic aliasing, not noise, scale, or sub-pixel accuracy.
 
 <p align="center"><img src="docs/results/success_case.png" width="420" alt="success"/> <img src="docs/results/failure_case.png" width="420" alt="honest failure"/></p>
 
