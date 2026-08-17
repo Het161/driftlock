@@ -1,0 +1,24 @@
+# Exact `pip freeze` of a clean virtualenv built from requirements.txt, captured
+# 2026-08-17 on Python 3.14.4.
+#
+# The problem statement asks to "pip freeze your env dependencies to reproduce the
+# exact results", so this file is the full transitive closure -- every package
+# actually present, not just the four this project imports directly.
+# Use requirements.txt to install; use this file to verify you got the same env.
+#
+#     python -m venv venv && venv/bin/pip install -r requirements.txt
+#     venv/bin/pip freeze | diff - requirements-freeze.txt
+
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.63.0
+kiwisolver==1.5.0
+matplotlib==3.11.1
+numpy==2.5.1
+opencv-python==5.0.0.93
+packaging==26.3
+pillow==12.3.0
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+scipy==1.18.0
+six==1.17.0

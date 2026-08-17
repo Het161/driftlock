@@ -115,7 +115,8 @@ CUDA to match, nothing to break. It also answers in under a second.
 | `ablation_gate.py` | the three-tier data ablation, exit 0 = pass |
 | `smoke_test.py` | fresh-machine sanity, 60 s |
 | `common.py` | shared I/O, seeding and affine helpers |
-| `requirements.txt` | pinned runtime dependencies |
+| `requirements.txt` | pinned runtime dependencies (install from this) |
+| `requirements-freeze.txt` | exact `pip freeze` of a clean env built from the above (verify against this) |
 | `CITATIONS.md` | every physics constant → 2–3 references ([S1]–[S13]) |
 | `docs/` | spec + amendment trail (how this design was reached) |
 | `docs/results/` | committed figures and `results.csv` from the final run |
@@ -139,6 +140,25 @@ python generate_dataset.py --style dram --noise-level medium --num-pairs 30 --se
   --pure-lattice --output-dir data/pure
 python evaluate.py --data-dir data/*_* data/pure --report-dir docs/results
 ```
+
+### Bonus: optical-microscope RGB images
+
+The problem statement offers bonus credit for generalising beyond grayscale SEM to
+3-channel optical images. `localize.py` handles them **unchanged** — `load_gray_float()`
+reads through `cv2.IMREAD_GRAYSCALE`, so a colour capture is demosaiced to luminance before
+matching, and ZNCC is invariant to the per-channel gain differences that distinguish an
+optical tool from an SEM.
+
+Verified on 12 DRAM pairs, each re-encoded as a 3-channel BGR image with per-channel gains
+(0.85 / 1.00 / 1.12) to mimic an optical white balance:
+
+| input | acc@5 px | median error |
+|---|---|---|
+| grayscale SEM | 100% | 0.055 px |
+| **3-channel RGB** | **100%** | **0.056 px** |
+
+Identical answer within 0.5 px on **12/12** pairs. The core SEM case is unaffected — this is
+the same code path, not a fork.
 
 ### Tested against the organisers' own generator
 
@@ -169,6 +189,29 @@ is periodic aliasing, not noise, scale, or sub-pixel accuracy.
 <p align="center"><img src="docs/results/success_case.png" width="420" alt="success"/> <img src="docs/results/failure_case.png" width="420" alt="honest failure"/></p>
 
 Full tables: `docs/results/results.csv` · robustness curves: `docs/results/robustness_noise.png`
+
+## Submission map (PS 02 FAQ, slide 7)
+
+| The problem statement asks for | In this repo |
+|---|---|
+| Pip freeze of env dependencies | `requirements-freeze.txt` (full closure) + `requirements.txt` |
+| Documented Python file generating the dataset, incl. noise modelling | `generate_dataset.py` |
+| Documented Python file giving center x,y for a 1k×1k (search, reference) pair | `localize.py` — `python localize.py --reference R.png --search S.png` → `x y` |
+| DL model + training notebook, *if DL is used* | n/a — classical CV, no weights, no training |
+| Supporting documents for methods and citations | `CITATIONS.md` ([S1]–[S14]), `docs/` spec + amendment trail |
+
+Scoring criteria (slide 8) and where the evidence lives:
+
+- **50% — coordinates + computation time.** 87.8% ± 4.8% within 5 px over 180 pairs,
+  **376 ms** per 1000×1000 pair on laptop CPU. `docs/results/results.csv`, per-row seeds.
+- **30% — augmentation code grounded in literature.** `generate_dataset.py`; every noise,
+  distortion, rotation and scale constant carries a `CITE:` tag resolving to 2–3 verified
+  public sources in `CITATIONS.md`, with a verification log of what was checked and corrected.
+- **10% — root cause / explainability of failures.** `--pure-lattice` is the honest-failure
+  exhibit (`docs/results/failure_case.png`); the axis-resolved ambiguity flag names *which*
+  coordinate is undetermined; `docs/SPEC_AMENDMENT_v1.6.md` §D traces the dominant failure
+  mode to landmark-free crops with measurements.
+- **Bonus — RGB optical.** See above: 100% acc@5, 12/12 agreement, same code path.
 
 ## Team
 
